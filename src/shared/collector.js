@@ -50,6 +50,7 @@ const {
 } = require('./sessionMetadata');
 const { kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./providers/proma/usage');
+const { loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph } = require('./providers/claude/ccSwitch');
 const {
   buildQoderCnHistoryGraph,
   buildQoderCnPeriods,
@@ -1050,6 +1051,10 @@ async function collectHistoryOnce(options) {
     rawGraphs.push(options.promaGraph);
     histories.push(normalizeHistory(parseGraphResult(options.promaGraph), { capDays, todayKey }));
   }
+  if (options.ccSwitchClaudeGraph) {
+    rawGraphs.push(options.ccSwitchClaudeGraph);
+    histories.push(normalizeHistory(parseGraphResult(options.ccSwitchClaudeGraph), { capDays, todayKey }));
+  }
   if (options.qoderCnGraph) {
     rawGraphs.push(options.qoderCnGraph);
     histories.push(normalizeHistory(parseGraphResult(options.qoderCnGraph), { capDays, todayKey }));
@@ -1160,6 +1165,8 @@ async function collectUsageOnce(options) {
   const localClients = new Set(PARSE_LOCAL_CLIENTS);
   const tokscaleClients = normalizedClients ? normalizedClients.split(',').filter((c) => !localClients.has(c)).join(',') : normalizedClients;
   const includesProma = normalizedClients.split(',').includes('proma');
+  const includesCcSwitchClaude = options.ccSwitchClaudeEnabled === true && platformValue === 'win32'
+    && normalizedClients.split(',').includes('claude');
   const includesQoderCn = normalizedClients.split(',').includes('qodercn');
   const trackedClientSet = new Set(normalizedClients.split(',').filter(Boolean));
   const targetClients = [...new Set(normalizeClientsCsv(options.targetClients).split(',').filter((client) => trackedClientSet.has(client)))];
@@ -1191,6 +1198,12 @@ async function collectUsageOnce(options) {
   let qoderCnRows = null;
   let qoderCnPricing = null;
   let qoderCnPeriodReadFailed = false;
+  let ccSwitchTodayRows = [];
+  let ccSwitchClaudeRefreshed = false;
+  const ccSwitchRows = includesCcSwitchClaude
+    ? loadCcSwitchClaudeRows({ dbPath: options.ccSwitchDbPath, cachePath: options.ccSwitchCachePath, logger: options.logger })
+    : [];
+  let admittedCcRows = [];
   const emitProgress = (periods) => {
     if (typeof options.onProgress !== 'function') return;
     const progress = { ...periods };
@@ -1315,6 +1328,14 @@ async function collectUsageOnce(options) {
       }
       if (promaPeriods) freshPartitions.proma = promaPeriods.today;
       if (qoderCnPeriods) freshPartitions.qodercn = qoderCnPeriods.today;
+      if (includesCcSwitchClaude && (!useTargetedPartitions || targetClientSet.has('claude'))) {
+        ccSwitchClaudeRefreshed = true;
+        const localClaude = freshPartitions.claude;
+        if (!localClaude?.totalTokens) {
+          ccSwitchTodayRows = ccSwitchRows.filter((row) => row.date === localTodayKey(collectedAt));
+          freshPartitions.claude = mergePeriods(localClaude, extractUsageFromTokscale(ccSwitchClaudeJson(ccSwitchTodayRows)));
+        }
+      }
       if (qoderCnPeriodReadFailed && anchor.todayPartitions?.qodercn) {
         // A transient local.db read failure must not turn the existing Qoder CN
         // partition into an empty one or subtract it from month/allTime.
@@ -1340,6 +1361,9 @@ async function collectUsageOnce(options) {
       today = mergeTodayPartitions(todayPartitions);
       month = applyPeriodDelta(anchor.month, today, anchor.today);
       allTime = applyPeriodDelta(anchor.allTime, today, anchor.today);
+      admittedCcRows = (anchor.ccSwitchAdmittedRows || []).filter((row) =>
+        !ccSwitchClaudeRefreshed || row.date !== localTodayKey(collectedAt));
+      admittedCcRows.push(...ccSwitchTodayRows);
     } else if (tokscaleClients) {
       // Serial on purpose: concurrent scans triple the peak CPU/IO load, which
       // is what let the issue #15 self-trigger loop spike tokscale past 500% CPU.
@@ -1386,6 +1410,17 @@ async function collectUsageOnce(options) {
       month = mergePeriods(month, qoderCnPeriods.month);
       allTime = mergePeriods(allTime, qoderCnPeriods.allTime);
       todayPartitions = { ...(todayPartitions || {}), qodercn: qoderCnPeriods.today };
+    }
+    if (includesCcSwitchClaude && !anchorUsed) {
+      admittedCcRows = admittedCcSwitchClaudeRows(ccSwitchRows, allTime);
+      const todayKey = localTodayKey(collectedAt);
+      const monthKey = `${todayKey.slice(0, 7)}-01`;
+      const validRows = admittedCcRows.filter((row) => row.date >= allTimeSince && row.date <= todayKey);
+      const ccToday = extractUsageFromTokscale(ccSwitchClaudeJson(validRows.filter((row) => row.date === todayKey)));
+      today = mergePeriods(today, ccToday);
+      month = mergePeriods(month, extractUsageFromTokscale(ccSwitchClaudeJson(validRows.filter((row) => row.date >= monthKey))));
+      allTime = mergePeriods(allTime, extractUsageFromTokscale(ccSwitchClaudeJson(validRows)));
+      todayPartitions = { ...(todayPartitions || {}), claude: mergePeriods(todayPartitions?.claude, ccToday) };
     }
     todayPartitions = completeTodayPartitions(todayPartitions, normalizedClients);
     // Partition metadata is internal but must remain as complete as the public
@@ -1559,6 +1594,7 @@ async function collectUsageOnce(options) {
       windowsPeriods,
       todayPartitions,
       qoderCnPeriods,
+      ccSwitchAdmittedRows: admittedCcRows,
       wslBundle,
       wslStatus,
       ...(summary.nativeSessions ? { nativeSessions: summary.nativeSessions } : {}),
@@ -1609,6 +1645,7 @@ async function collectUsageOnce(options) {
     const history = await collectHistoryOnce({
       clients: tokscaleClients,
       promaGraph: includesProma ? buildPromaHistoryGraph({ rows: promaRows || collectPromaRows(), pricingByModel: promaPricing || {} }) : null,
+      ccSwitchClaudeGraph: includesCcSwitchClaude ? ccSwitchClaudeGraph(admittedCcRows.filter((row) => row.date >= allTimeSince)) : null,
       qoderCnGraph: historyQoderCnGraph || null,
       historyEnabled: options.historyEnabled,
       commandTimeoutMs: options.historyTimeoutMs,
@@ -1670,6 +1707,12 @@ function clientWatchCandidates(clientsCsv, options = {}) {
         && !INTERVAL_ONLY_SOURCE_CHECK_IDS.has(root.id)
       ))
       .map((root) => root.dir);
+  }
+  if (options.ccSwitchClaudeEnabled === true
+    && (options.platform || process.platform) === 'win32'
+    && normalizeClientsCsv(clientsCsv).split(',').includes('claude')) {
+    const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
+    byClient.claude = [...new Set([...(byClient.claude || []), path.dirname(dbPath)])];
   }
   return byClient;
 }
@@ -1752,18 +1795,27 @@ function watchPathsForClients(clientsCsv, options = {}) {
 // other — the same "two derivations of one thing" trap the exporter had.
 function watchAttributionRootsForClients(clientsCsv, watchRoots = null, options = {}) {
   const rootsByClient = watchRoots || watchClientRootsForClients(clientsCsv, options);
+  let attributedRoots = rootsByClient;
+  if (options.ccSwitchClaudeEnabled === true && rootsByClient.claude) {
+    const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
+    const parent = path.resolve(path.dirname(dbPath));
+    attributedRoots = {
+      ...rootsByClient,
+      claude: [...rootsByClient.claude.filter((root) => path.resolve(root) !== parent), dbPath, `${dbPath}-wal`]
+    };
+  }
   const exporter = copilotExporterWatch(os.homedir());
-  if (!exporter || !rootsByClient.copilot) return rootsByClient;
+  if (!exporter || !attributedRoots.copilot) return attributedRoots;
   const exporterDir = path.resolve(exporter.dir);
   const ownedByOtherSource = new Set(
     (clientSourceRoots(clientsCsv, options).copilot || [])
       .filter((root) => root.id !== 'copilot-otel-exporter')
       .map((root) => path.resolve(root.dir))
   );
-  const copilot = rootsByClient.copilot
+  const copilot = attributedRoots.copilot
     .filter((root) => path.resolve(root) !== exporterDir || ownedByOtherSource.has(exporterDir));
   copilot.push(exporter.canonicalFile);
-  return { ...rootsByClient, copilot: [...new Set(copilot)] };
+  return { ...attributedRoots, copilot: [...new Set(copilot)] };
 }
 
 function clientsForWatchPath(filePath, rootsByClient) {
@@ -1934,6 +1986,13 @@ function watchPolicyEntries(clientsCsv, options = {}) {
   };
   const withBasename = (client, basename) =>
     (candidates[client] || []).filter((dir) => path.basename(dir) === basename);
+
+  if (options.ccSwitchClaudeEnabled === true) {
+    const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
+    const name = path.basename(dbPath);
+    bound('claude', [path.dirname(dbPath)], directChildOnly((child) =>
+      child === name || child === `${name}-wal`));
+  }
 
   // Hermes: the SQLite trio is the only source, at any depth. Each explicit
   // watch root — the home AND every profile dir under it — is kept by the
@@ -2314,7 +2373,7 @@ function canTargetTodayPartitions(anchor, targetClients) {
   );
 }
 
-function configFingerprint(clientsCsv, allTimeSince, projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null) {
+function configFingerprint(clientsCsv, allTimeSince, projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false) {
   // Deterministic string that captures the config inputs anchor correctness
   // depends on. When this changes, the persisted anchor is invalidated.
   const qoderCn = String(qoderCnDbPath || '').trim();
@@ -2327,7 +2386,7 @@ function configFingerprint(clientsCsv, allTimeSince, projectsEnabled = true, qod
   // common case.
   const scanKey = customScanPathsFingerprint(customScanPaths);
   const scanPart = scanKey ? `|scan:${scanKey}` : '';
-  return `${normalizeClientsCsv(clientsCsv)}|${allTimeSince}|projects:${projectsEnabled !== false ? 'on' : 'off'}${qoderCnPart}${qoderCnProjectsPart}${scanPart}`;
+  return `${normalizeClientsCsv(clientsCsv)}|${allTimeSince}|projects:${projectsEnabled !== false ? 'on' : 'off'}${qoderCnPart}${qoderCnProjectsPart}${scanPart}${ccSwitchClaudeEnabled ? '|ccswitch:claude' : ''}`;
 }
 
 function qoderCnSourcesForClients(clientsCsv, options = {}) {
@@ -2358,10 +2417,10 @@ function qoderCnProjectsDirForClients(clientsCsv, options = {}) {
 // collector still reuses the periods then and simply forces a full scan, while
 // a seed has nothing to stand on and declines.
 function collectorAnchorTrust(saved, options = {}) {
-  const { clients = '', allTimeSince = '', projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, now = new Date() } = options;
+  const { clients = '', allTimeSince = '', projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false, now = new Date() } = options;
   if (!saved || saved.dateKey !== localTodayKey(now)) return null;
   if (!saved.today || !saved.month || !saved.allTime) return null;
-  if (saved.configFingerprint !== configFingerprint(clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths)) return null;
+  if (saved.configFingerprint !== configFingerprint(clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled)) return null;
   const parsed = Date.parse(saved.fullScanAt || '');
   const capturedAtMs = Number.isFinite(parsed) && parsed <= now.getTime() ? parsed : null;
   return { capturedAtMs };
@@ -2499,7 +2558,9 @@ function startCollector(options) {
     customScanPaths: options.customScanPaths,
     env: options.env,
     homeDir: options.homeDir,
-    platform: options.platform
+    platform: options.platform,
+    ccSwitchClaudeEnabled: options.ccSwitchClaudeEnabled === true,
+    ccSwitchDbPath: options.ccSwitchDbPath
   };
   const qoderCnSources = qoderCnSourcesForClients(normalizedClients, {
     homeDir: options.homeDir,
@@ -2646,7 +2707,8 @@ function startCollector(options) {
         projectsEnabled: options.projectsEnabled,
         qoderCnDbPath,
         qoderCnProjectsDir,
-        customScanPaths: options.customScanPaths
+        customScanPaths: options.customScanPaths,
+        ccSwitchClaudeEnabled: options.ccSwitchClaudeEnabled === true
       });
       if (trust) {
         anchor = {
@@ -2655,6 +2717,7 @@ function startCollector(options) {
           month: saved.month,
           allTime: saved.allTime,
           qoderCnPeriods: saved.qoderCnPeriods || null,
+          ccSwitchAdmittedRows: saved.ccSwitchAdmittedRows || [],
           // Per-client partitions are deliberately rebuilt by the first
           // anchored all-client tick after restart. Persisted partitions
           // could be stale for clients that changed while the app was down.
@@ -2855,6 +2918,7 @@ function startCollector(options) {
           allTime: captured.windowsPeriods.allTime,
           todayPartitions: captured.todayPartitions,
           qoderCnPeriods: captured.qoderCnPeriods,
+          ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
           ...(captured.nativeSessions ? { nativeSessions: captured.nativeSessions } : {}),
           ...(captured.nativeProjects ? { nativeProjects: captured.nativeProjects } : {})
         };
@@ -2870,11 +2934,12 @@ function startCollector(options) {
               month: anchor.month,
               allTime: anchor.allTime,
               qoderCnPeriods: anchor.qoderCnPeriods,
+              ccSwitchAdmittedRows: anchor.ccSwitchAdmittedRows,
               wslBundle: wslAnchor,
               wslStatus: wslStatusAnchor,
               ...(anchor.nativeSessions ? { nativeSessions: anchor.nativeSessions } : {}),
               ...(anchor.nativeProjects ? { nativeProjects: anchor.nativeProjects } : {}),
-              configFingerprint: configFingerprint(clients, allTimeSince, options.projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, options.customScanPaths),
+              configFingerprint: configFingerprint(clients, allTimeSince, options.projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, options.customScanPaths, options.ccSwitchClaudeEnabled === true),
               fullScanAt: new Date(lastFullScanAt).toISOString()
             }));
           } catch (_) {}
@@ -2883,6 +2948,7 @@ function startCollector(options) {
         // Keep the rolling per-client today partitions fresh for targeted
         // watch ticks. WSL stays independently frozen between interval ticks.
         if (captured.todayPartitions) anchor.todayPartitions = captured.todayPartitions;
+        if (captured.ccSwitchAdmittedRows) anchor.ccSwitchAdmittedRows = captured.ccSwitchAdmittedRows;
         if (!qoderCnReadState.periodFailed && captured.qoderCnPeriods?.today && anchor.qoderCnPeriods) {
           anchor.qoderCnPeriods = {
             today: captured.qoderCnPeriods.today,

@@ -777,6 +777,7 @@ function electronUsageConfig(errorPrefix) {
     watchTriggersCollection: collectorWatchTriggersCollection(),
     intervalRequiresActivity: collectorIntervalRequiresActivity(),
     watchDebounceMs: 1500,
+    ccSwitchClaudeEnabled: process.platform === 'win32' && /-personal\./.test(appVersion()),
     dailyHistoryArchiveWriteEnabled: () => !isExternalAgentActive(),
     onError: (error, reason) => console.log(`[${errorPrefix}] ${reason}: ${error.message}`),
     logger: (message) => console.log(`[${errorPrefix}] ${message}`)
@@ -2949,13 +2950,15 @@ function electronPresentationStats(stats) {
   const grouping = settings?.modelAliasGrouping;
   const codexSelected = String(settings?.clients || '').split(',').includes('codex');
   const snapshot = settings?.codexAccountActivityEnabled === true && codexSelected ? codexAccountActivity.snapshot() : null;
-  const singleCodexAccount = !codexAccountActivity.multipleAccounts();
-  const snapshotStale = isAccountActivityStale(snapshot);
+  const singleCodexAccount = snapshot ? !codexAccountActivity.multipleAccounts() : true;
+  const snapshotStale = snapshot ? isAccountActivityStale(snapshot) : false;
   const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null, settings?.allTimeSince,
     settings?.codexAccountActivityEnabled, snapshot?.fetchedAt, snapshot?.lifetimeTokens,
     snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale]);
   return presentationCache.get(stats, key, () => projectModelAliasStats(
-    projectLimitStatsForDisplay(applyAccountActivityToStats(stats, snapshot, settings?.allTimeSince, settings?.deviceId, singleCodexAccount), limitOptions),
+    projectLimitStatsForDisplay(snapshot
+      ? applyAccountActivityToStats(stats, snapshot, settings?.allTimeSince, settings?.deviceId, singleCodexAccount)
+      : stats, limitOptions),
     aliases,
     { grouping }
   ));
@@ -4471,6 +4474,7 @@ function primeLocalStatsFromAnchor(usageOptions, widgetProducerOwner) {
       allTimeSince: usageOptions.allTimeSince,
       projectsEnabled: usageOptions.projectsEnabled,
       customScanPaths: usageOptions.customScanPaths,
+      ccSwitchClaudeEnabled: usageOptions.ccSwitchClaudeEnabled,
       wslScanEnabled: usageOptions.wslScanEnabled,
       wslSupported: process.platform === 'win32',
       hostname: os.hostname(),
