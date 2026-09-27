@@ -146,6 +146,7 @@ function createMainWindowAutoHide(options) {
     if (sameBounds(start, target)) return;
     if (instant || animationMs <= 0 || reducedMotion()) {
       expectedMoves.push(target);
+      if (expectedMoves.length > 32) expectedMoves.shift();
       lastProgrammaticBounds = target;
       win.setBounds(target);
       return;
