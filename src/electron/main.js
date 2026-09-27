@@ -25,6 +25,8 @@ const fontSettingsApi = require('../shared/fontSettings');
 const motionPreferenceApi = require('./motionPreference');
 const { clearBackgroundImage, getBackgroundImage, importBackgroundImage } = require('./backgroundImage');
 const { createClientSourceIpcHandlers } = require('./clientSourceIpc');
+const { createMainWindowAutoHide } = require('./mainWindowAutoHide');
+const { isOtherAppFullscreen } = require('./windowsForegroundFullscreen');
 const { createClaudeWebFetch } = require('./providers/claude/webFetch');
 const { runAntigravityOAuthLogin } = require('./providers/antigravity/oauthLogin');
 const antigravityOAuth = require('../shared/providers/antigravity/oauth');
@@ -576,6 +578,8 @@ function defaultSettings() {
     interfaceFontFamily: '',
     displayFontFamily: fontSettingsApi.DEFAULT_DISPLAY_FONT,
     floatingBubbleEnabled: false,
+    mainWindowAutoHideEnabled: process.platform === 'win32',
+    mainWindowAutoHideSide: null,
     floatingBubbleTrigger: 'click',
     floatingBubbleContent: 'icon',
     floatingBubbleCustomLayout: createDefaultTrayLayout(),
@@ -1987,6 +1991,7 @@ let persistBoundsTimer = null;
 let floatingBubbleAutoCollapseTimer = null;
 const floatingBubbleState = { collapsed: false, side: null, collapsedBounds: null, expandedBounds: null, suppressNextCollapse: false, contentSize: null };
 let mainWindowChrome = { collapsedFloatingBubble: false };
+let mainWindowAutoHide = null;
 
 function stopPersistBoundsTimer() {
   if (persistBoundsTimer) clearTimeout(persistBoundsTimer);
@@ -2238,6 +2243,7 @@ function syncFloatingBubbleAvailability() {
 
 function persistBoundsSoon() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindowAutoHide?.isDocked()) return;
   if (!shouldPersistWindowBounds(mainWindow)) {
     stopPersistBoundsTimer();
     return;
@@ -2246,6 +2252,7 @@ function persistBoundsSoon() {
   persistBoundsTimer = setTimeout(() => {
     persistBoundsTimer = null;
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindowAutoHide?.isDocked()) return;
     if (!shouldPersistWindowBounds(mainWindow)) return;
     const next = mainWindow.getBounds();
     const prev = settings.windowBounds || {};
@@ -2535,6 +2542,9 @@ function readSettings() {
     merged.hubHostSecret = typeof merged.hubHostSecret === 'string' ? merged.hubHostSecret : '';
     delete merged.workbuddyEndpoint;
     merged.floatingBubbleEnabled = parseBoolean(merged.floatingBubbleEnabled ?? merged.edgeDrawerEnabled, false);
+    merged.mainWindowAutoHideEnabled = parseBoolean(merged.mainWindowAutoHideEnabled, process.platform === 'win32');
+    merged.mainWindowAutoHideSide = ['left', 'right', 'top', 'bottom'].includes(merged.mainWindowAutoHideSide)
+      ? merged.mainWindowAutoHideSide : null;
     merged.archivedClientUsage = normalizeArchivedClientUsage(merged.archivedClientUsage);
     delete merged.edgeDrawerEnabled;
     merged.floatingBubbleTrigger = merged.floatingBubbleTrigger === 'hover' ? 'hover' : 'click';
@@ -2829,6 +2839,7 @@ function applyWindowSettings() {
   if (!mainWindow) return;
   if (floatingBubbleState.collapsed) {
     applyCollapsedFloatingBubbleLimits(mainWindow.getBounds());
+    mainWindowAutoHide?.sync();
     return;
   }
   const behavior = describeWindowBehavior(settings);
@@ -2842,6 +2853,7 @@ function applyWindowSettings() {
   if (typeof mainWindow.setSkipTaskbar === 'function') mainWindow.setSkipTaskbar(skipTaskbarForSettings(settings));
   if (!behavior.focusable && typeof mainWindow.blur === 'function') mainWindow.blur();
   syncTaskbarZOrder();
+  mainWindowAutoHide?.sync();
 }
 
 function nativeBlurEnabled(source = settings) {
@@ -4626,6 +4638,7 @@ function focusExistingWindow() {
     return;
   }
   if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindowAutoHide?.reveal({ active: true });
   if (settings?.trayMode) showPopover();
   else {
     applyMacSpaceBehavior(false);
@@ -5247,6 +5260,10 @@ function unregisterWindowToggleShortcut() {
 
 function handleWindowToggleShortcut() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindowAutoHide?.state().hidden) {
+    focusExistingWindow();
+    return;
+  }
   const action = windowToggleShortcutAction({
     trayMode: Boolean(settings?.trayMode),
     floatingBubbleCollapsed: Boolean(floatingBubbleState.collapsed),
@@ -6405,6 +6422,8 @@ function loadWindowFile(target, options = {}) {
 
 function createWindow(boundsOverride, options = {}) {
   ensureSettingsLoaded();
+  mainWindowAutoHide?.dispose();
+  mainWindowAutoHide = null;
   const collapsedFloatingBubble = options.collapsedFloatingBubble === true;
   const glass = nativeBlurEnabled();
   const windowsBackdrop = normalizeWindowsBackdropMode(settings?.windowsBackdrop);
@@ -6444,6 +6463,18 @@ function createWindow(boundsOverride, options = {}) {
   });
   mainWindow = win;
   mainWindowChrome = { collapsedFloatingBubble };
+  if (process.platform === 'win32') {
+    mainWindowAutoHide = createMainWindowAutoHide({
+      window: win,
+      screen,
+      getSettings: () => settings,
+      save: saveSettings,
+      isForegroundFullscreen: isOtherAppFullscreen,
+      onState: (state) => {
+        if (!win.isDestroyed()) win.webContents.send('window:autoHideState', state);
+      }
+    });
+  }
   applyMacSpaceBehavior();
   applyWindowsChrome(win, { round: true });
   let windowsAccentFallback = false;
@@ -6464,10 +6495,12 @@ function createWindow(boundsOverride, options = {}) {
       return;
     }
     stopPersistBoundsTimer();
-    persistWindowState(settings, saveSettings, normalWindowBounds(win), true);
+    persistWindowState(settings, saveSettings, mainWindowAutoHide?.expandedBounds() || normalWindowBounds(win), true);
+    mainWindowAutoHide?.sync();
   });
   win.on('unmaximize', () => {
     if (!shouldTrackWindowMaximized(settings, floatingBubbleState)) return;
+    mainWindowAutoHide?.sync();
     persistWindowState(settings, saveSettings, normalWindowBounds(win), false);
     persistBoundsSoon();
   });
@@ -6490,10 +6523,10 @@ function createWindow(boundsOverride, options = {}) {
     if (settings?.trayMode && !suppressNextBlurHide && !quitRequested) hidePopover();
     else if (!quitRequested) scheduleFloatingBubbleAutoCollapse();
   });
-  win.on('resized', () => { persistBoundsSoon(); syncTaskbarZOrder(); });
-  win.on('moved', () => { persistBoundsSoon(); syncTaskbarZOrder(); });
-  win.on('show', syncTaskbarZOrder);
-  win.on('restore', syncTaskbarZOrder);
+  win.on('resized', () => { mainWindowAutoHide?.onResized(); persistBoundsSoon(); syncTaskbarZOrder(); });
+  win.on('moved', () => { mainWindowAutoHide?.onMoved(); persistBoundsSoon(); syncTaskbarZOrder(); });
+  win.on('show', () => { syncTaskbarZOrder(); mainWindowAutoHide?.sync(); });
+  win.on('restore', () => { syncTaskbarZOrder(); mainWindowAutoHide?.sync(); });
   win.on('hide', stopTaskbarZOrderKeeper);
   win.on('minimize', stopTaskbarZOrderKeeper);
   win.on('close', (event) => {
@@ -6512,6 +6545,10 @@ function createWindow(boundsOverride, options = {}) {
   // The dock's own windows would otherwise keep the process alive after the
   // last real window closes, which window-all-closed relies on for quitting.
   win.on('closed', () => {
+    if (mainWindowAutoHide && mainWindow === win) {
+      mainWindowAutoHide.dispose();
+      mainWindowAutoHide = null;
+    }
     if (quitRequested || process.platform === 'darwin') return;
     if (BrowserWindow.getAllWindows().every((other) => edgeDockController?.owns(other))) app.quit();
   });
@@ -6521,6 +6558,7 @@ function createWindow(boundsOverride, options = {}) {
   win.on('restore', () => sendMainWindowVisibility(win));
   win.webContents.on('did-finish-load', () => {
     sendFloatingBubbleState();
+    if (mainWindowAutoHide?.isDocked()) win.webContents.send('window:autoHideState', mainWindowAutoHide.state());
     // Only report a window that is already on screen. A window still awaiting its
     // reveal reports isVisible() === false, and loadWindowFile({ waitForContent })
     // reveals it *because* the renderer painted real content — pushing "hidden"
@@ -6566,6 +6604,7 @@ function handleZoomShortcut(event, input) {
 
 function replaceMainWindow(bounds, options = {}) {
   const old = mainWindow;
+  if (mainWindowAutoHide?.safeBounds()) bounds = mainWindowAutoHide.safeBounds();
   const wasFocused = old && !old.isDestroyed() ? old.isFocused() : false;
   if (old && !old.isDestroyed()) old.removeAllListeners('close');
   // Build the new window first so total window count never drops to 0
@@ -6706,7 +6745,7 @@ async function cursorStatusValue({ discover = false } = {}) {
 
 function rebuildWindow() {
   if (!mainWindow) return;
-  const bounds = rebuildWindowBounds(mainWindow, floatingBubbleState);
+  const bounds = mainWindowAutoHide?.safeBounds() || rebuildWindowBounds(mainWindow, floatingBubbleState);
   const wasFocused = mainWindow.isFocused();
   const old = mainWindow;
   floatingBubbleState.collapsed = false;
@@ -6960,6 +6999,8 @@ app.whenReady().then(() => {
       ),
       tokenRateMode: normalizeTokenRateMode(patch.tokenRateMode ?? settings.tokenRateMode),
       floatingBubbleEnabled: parseBoolean(patch.floatingBubbleEnabled ?? settings.floatingBubbleEnabled, false),
+      mainWindowAutoHideEnabled: parseBoolean(patch.mainWindowAutoHideEnabled ?? settings.mainWindowAutoHideEnabled, process.platform === 'win32'),
+      mainWindowAutoHideSide: settings.mainWindowAutoHideSide,
       edgeDockEnabled: parseBoolean(patch.edgeDockEnabled ?? settings.edgeDockEnabled, false),
       edgeDockSide: normalizeEdgeDockSide(patch.edgeDockSide ?? settings.edgeDockSide),
       edgeDockOffset: normalizeEdgeDockOffset(patch.edgeDockOffset ?? settings.edgeDockOffset),
@@ -7184,6 +7225,9 @@ app.whenReady().then(() => {
   });
   ipcMain.on('window:viewState', (_event, patch) => {
     updateRendererViewState(patch);
+  });
+  ipcMain.on('window:autoHideInteraction', (event, active) => {
+    if (event.sender === mainWindow?.webContents) mainWindowAutoHide?.setInteracting(active === true);
   });
   ipcMain.handle('floatingBubble:expand', () => expandFloatingBubble());
   ipcMain.handle('floatingBubble:peek', () => expandFloatingBubble({ focus: false }));

@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="edgeDock/composer.css" />
   </head>
   <body>
+    <div id="mainWindowAutoHideGrip" aria-hidden="true"></div>
     <main class="shell">
       <header class="titlebar">
         <div>
@@ -251,6 +252,13 @@
                   <option value="desktop" data-i18n="settings.windowBehavior.desktop">Desktop pinned</option>
                 </select>
                 <span class="settings-note settings-item-desc" data-i18n="settings.display.windowBehaviorNote">Desktop pinned keeps the widget below other apps and locks drag/resize while staying clickable.</span>
+              </label>
+              <label id="mainWindowAutoHideRow" class="checkbox-label settings-item hidden">
+                <span class="settings-item-text">
+                  <span class="settings-item-title" data-i18n="settings.display.mainWindowAutoHide">Hide main window at screen edge</span>
+                </span>
+                <input id="mainWindowAutoHideInput" type="checkbox" />
+                <span class="settings-note settings-item-desc" data-i18n="settings.display.mainWindowAutoHideNote">Drag the main window to an outer screen edge. Move away to hide it; hover over the thin strip to reveal it.</span>
               </label>
               <label id="keepAboveTaskbarRow" class="checkbox-label settings-item hidden">
                 <span class="settings-item-text">

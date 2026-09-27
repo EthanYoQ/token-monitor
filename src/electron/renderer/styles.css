@@ -63,6 +63,30 @@ html, body {
    `html`, so `rem` keeps its conventional 16px meaning. The few glyph buttons
    that do want 16px now say so; everything else already declares its own size. */
 body { font-size: 11px; }
+#mainWindowAutoHideGrip { display: none; }
+body.main-auto-hide-hidden #mainWindowAutoHideGrip {
+  display: block;
+  position: fixed;
+  z-index: 10000;
+  background: rgba(var(--accent-rgb), 0.88);
+  box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.6);
+}
+body.main-auto-hide-hidden.auto-hide-left #mainWindowAutoHideGrip,
+body.main-auto-hide-hidden.auto-hide-right #mainWindowAutoHideGrip {
+  top: 0;
+  bottom: 0;
+  width: 8px;
+}
+body.main-auto-hide-hidden.auto-hide-left #mainWindowAutoHideGrip { right: 0; }
+body.main-auto-hide-hidden.auto-hide-right #mainWindowAutoHideGrip { left: 0; }
+body.main-auto-hide-hidden.auto-hide-top #mainWindowAutoHideGrip,
+body.main-auto-hide-hidden.auto-hide-bottom #mainWindowAutoHideGrip {
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+body.main-auto-hide-hidden.auto-hide-top #mainWindowAutoHideGrip { bottom: 0; }
+body.main-auto-hide-hidden.auto-hide-bottom #mainWindowAutoHideGrip { top: 0; }
 button, input, select { font: inherit; }
 button:focus, button:focus-visible { outline: none; }
 input, textarea, [contenteditable="true"] {
