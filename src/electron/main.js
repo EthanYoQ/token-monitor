@@ -4474,6 +4474,7 @@ function primeLocalStatsFromAnchor(usageOptions, widgetProducerOwner) {
       projectsEnabled: usageOptions.projectsEnabled,
       customScanPaths: usageOptions.customScanPaths,
       ccSwitchClaudeEnabled: usageOptions.ccSwitchClaudeEnabled,
+      ccSwitchDbPath: usageOptions.ccSwitchDbPath,
       wslScanEnabled: usageOptions.wslScanEnabled,
       wslSupported: process.platform === 'win32',
       hostname: os.hostname(),

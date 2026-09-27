@@ -24,6 +24,7 @@ function deviceRecordFromAnchor(saved, options = {}) {
     allTimeSince = '',
     projectsEnabled = true,
     ccSwitchClaudeEnabled = false,
+    ccSwitchDbPath,
     qoderCnDbPath: qoderCnDbPathOption,
     qoderCnProjectsDir: qoderCnProjectsDirOption,
     customScanPaths = null,
@@ -39,7 +40,7 @@ function deviceRecordFromAnchor(saved, options = {}) {
   const qoderCnSources = qoderCnSourcesForClients(clients, { homeDir, env, platform: sourcePlatform });
   const qoderCnDbPath = qoderCnDbPathOption === undefined ? qoderCnSources.dbPath : qoderCnDbPathOption;
   const qoderCnProjectsDir = qoderCnProjectsDirOption === undefined ? qoderCnSources.projectsDir : qoderCnProjectsDirOption;
-  const trust = collectorAnchorTrust(saved, { clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled, now });
+  const trust = collectorAnchorTrust(saved, { clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled, ccSwitchDbPath, now });
   if (!trust) return null;
   // The seed's own rule, and the one place it is stricter than the collector.
   // A capture time the collector cannot trust only costs it a full scan, but

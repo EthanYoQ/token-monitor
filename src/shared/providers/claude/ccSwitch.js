@@ -137,4 +137,4 @@ function ccSwitchClaudeGraph(rows) {
   return { contributions: [...dates.values()].sort((a, b) => a.date.localeCompare(b.date)) };
 }
 
-module.exports = { readCcSwitchClaudeRows, loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph };
+module.exports = { DB_PATH, readCcSwitchClaudeRows, loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph };

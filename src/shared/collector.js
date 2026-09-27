@@ -50,7 +50,7 @@ const {
 } = require('./sessionMetadata');
 const { kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./providers/proma/usage');
-const { loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph } = require('./providers/claude/ccSwitch');
+const { DB_PATH: CC_SWITCH_DB_PATH, loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph } = require('./providers/claude/ccSwitch');
 const {
   buildQoderCnHistoryGraph,
   buildQoderCnPeriods,
@@ -2377,7 +2377,7 @@ function canTargetTodayPartitions(anchor, targetClients) {
   );
 }
 
-function configFingerprint(clientsCsv, allTimeSince, projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false) {
+function configFingerprint(clientsCsv, allTimeSince, projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false, ccSwitchDbPath = '') {
   // Deterministic string that captures the config inputs anchor correctness
   // depends on. When this changes, the persisted anchor is invalidated.
   const qoderCn = String(qoderCnDbPath || '').trim();
@@ -2390,7 +2390,7 @@ function configFingerprint(clientsCsv, allTimeSince, projectsEnabled = true, qod
   // common case.
   const scanKey = customScanPathsFingerprint(customScanPaths);
   const scanPart = scanKey ? `|scan:${scanKey}` : '';
-  return `${normalizeClientsCsv(clientsCsv)}|${allTimeSince}|projects:${projectsEnabled !== false ? 'on' : 'off'}${qoderCnPart}${qoderCnProjectsPart}${scanPart}${ccSwitchClaudeEnabled ? '|ccswitch:claude' : ''}`;
+  return `${normalizeClientsCsv(clientsCsv)}|${allTimeSince}|projects:${projectsEnabled !== false ? 'on' : 'off'}${qoderCnPart}${qoderCnProjectsPart}${scanPart}${ccSwitchClaudeEnabled ? `|ccswitch:claude:${path.resolve(ccSwitchDbPath || CC_SWITCH_DB_PATH)}` : ''}`;
 }
 
 function qoderCnSourcesForClients(clientsCsv, options = {}) {
@@ -2421,10 +2421,10 @@ function qoderCnProjectsDirForClients(clientsCsv, options = {}) {
 // collector still reuses the periods then and simply forces a full scan, while
 // a seed has nothing to stand on and declines.
 function collectorAnchorTrust(saved, options = {}) {
-  const { clients = '', allTimeSince = '', projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false, now = new Date() } = options;
+  const { clients = '', allTimeSince = '', projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false, ccSwitchDbPath = '', now = new Date() } = options;
   if (!saved || saved.dateKey !== localTodayKey(now)) return null;
   if (!saved.today || !saved.month || !saved.allTime) return null;
-  if (saved.configFingerprint !== configFingerprint(clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled)) return null;
+  if (saved.configFingerprint !== configFingerprint(clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled, ccSwitchDbPath)) return null;
   const parsed = Date.parse(saved.fullScanAt || '');
   const capturedAtMs = Number.isFinite(parsed) && parsed <= now.getTime() ? parsed : null;
   return { capturedAtMs };
@@ -2712,7 +2712,8 @@ function startCollector(options) {
         qoderCnDbPath,
         qoderCnProjectsDir,
         customScanPaths: options.customScanPaths,
-        ccSwitchClaudeEnabled: options.ccSwitchClaudeEnabled === true
+        ccSwitchClaudeEnabled: options.ccSwitchClaudeEnabled === true,
+        ccSwitchDbPath: options.ccSwitchDbPath
       });
       if (trust) {
         anchor = {
@@ -2946,7 +2947,7 @@ function startCollector(options) {
               wslStatus: wslStatusAnchor,
               ...(anchor.nativeSessions ? { nativeSessions: anchor.nativeSessions } : {}),
               ...(anchor.nativeProjects ? { nativeProjects: anchor.nativeProjects } : {}),
-              configFingerprint: configFingerprint(clients, allTimeSince, options.projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, options.customScanPaths, options.ccSwitchClaudeEnabled === true),
+              configFingerprint: configFingerprint(clients, allTimeSince, options.projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, options.customScanPaths, options.ccSwitchClaudeEnabled === true, options.ccSwitchDbPath),
               fullScanAt: new Date(lastFullScanAt).toISOString()
             }));
           } catch (_) {}
