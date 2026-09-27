@@ -1200,6 +1200,7 @@ async function collectUsageOnce(options) {
   let qoderCnPeriodReadFailed = false;
   let ccSwitchTodayRows = [];
   let ccSwitchClaudeRefreshed = false;
+  let ccSwitchTodayAdmitted = anchorUsed && anchor.ccSwitchTodayAdmitted === true;
   const ccSwitchRows = includesCcSwitchClaude
     ? loadCcSwitchClaudeRows({ dbPath: options.ccSwitchDbPath, cachePath: options.ccSwitchCachePath, logger: options.logger })
     : [];
@@ -1331,10 +1332,10 @@ async function collectUsageOnce(options) {
       if (includesCcSwitchClaude && (!useTargetedPartitions || targetClientSet.has('claude'))) {
         ccSwitchClaudeRefreshed = true;
         const localClaude = freshPartitions.claude;
-        if (!localClaude?.totalTokens) {
-          ccSwitchTodayRows = ccSwitchRows.filter((row) => row.date === localTodayKey(collectedAt));
-          freshPartitions.claude = mergePeriods(localClaude, extractUsageFromTokscale(ccSwitchClaudeJson(ccSwitchTodayRows)));
-        }
+        if (ccSwitchTodayAdmitted) ccSwitchTodayRows = admittedCcSwitchClaudeRows(
+          ccSwitchRows.filter((row) => row.date === localTodayKey(collectedAt)), localClaude
+        );
+        freshPartitions.claude = mergePeriods(localClaude, extractUsageFromTokscale(ccSwitchClaudeJson(ccSwitchTodayRows)));
       }
       if (qoderCnPeriodReadFailed && anchor.todayPartitions?.qodercn) {
         // A transient local.db read failure must not turn the existing Qoder CN
@@ -1412,6 +1413,8 @@ async function collectUsageOnce(options) {
       todayPartitions = { ...(todayPartitions || {}), qodercn: qoderCnPeriods.today };
     }
     if (includesCcSwitchClaude && !anchorUsed) {
+      // Keep the full scan's overlap decision even before CC-Switch records a row today.
+      ccSwitchTodayAdmitted = admittedCcSwitchClaudeRows([{ date: localTodayKey(collectedAt) }], allTime).length === 1;
       admittedCcRows = admittedCcSwitchClaudeRows(ccSwitchRows, allTime);
       const todayKey = localTodayKey(collectedAt);
       const monthKey = `${todayKey.slice(0, 7)}-01`;
@@ -1595,6 +1598,7 @@ async function collectUsageOnce(options) {
       todayPartitions,
       qoderCnPeriods,
       ccSwitchAdmittedRows: admittedCcRows,
+      ccSwitchTodayAdmitted,
       wslBundle,
       wslStatus,
       ...(summary.nativeSessions ? { nativeSessions: summary.nativeSessions } : {}),
@@ -2718,6 +2722,7 @@ function startCollector(options) {
           allTime: saved.allTime,
           qoderCnPeriods: saved.qoderCnPeriods || null,
           ccSwitchAdmittedRows: saved.ccSwitchAdmittedRows || [],
+          ccSwitchTodayAdmitted: saved.ccSwitchTodayAdmitted === true,
           // Per-client partitions are deliberately rebuilt by the first
           // anchored all-client tick after restart. Persisted partitions
           // could be stale for clients that changed while the app was down.
@@ -2919,6 +2924,7 @@ function startCollector(options) {
           todayPartitions: captured.todayPartitions,
           qoderCnPeriods: captured.qoderCnPeriods,
           ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
+          ccSwitchTodayAdmitted: captured.ccSwitchTodayAdmitted,
           ...(captured.nativeSessions ? { nativeSessions: captured.nativeSessions } : {}),
           ...(captured.nativeProjects ? { nativeProjects: captured.nativeProjects } : {})
         };
@@ -2935,6 +2941,7 @@ function startCollector(options) {
               allTime: anchor.allTime,
               qoderCnPeriods: anchor.qoderCnPeriods,
               ccSwitchAdmittedRows: anchor.ccSwitchAdmittedRows,
+              ccSwitchTodayAdmitted: anchor.ccSwitchTodayAdmitted,
               wslBundle: wslAnchor,
               wslStatus: wslStatusAnchor,
               ...(anchor.nativeSessions ? { nativeSessions: anchor.nativeSessions } : {}),

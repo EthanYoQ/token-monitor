@@ -161,7 +161,8 @@ test('anchored refresh changes CC-Switch Claude today by delta without counting 
       month: captured.windowsPeriods.month,
       allTime: captured.windowsPeriods.allTime,
       todayPartitions: captured.todayPartitions,
-      ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows
+      ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
+      ccSwitchTodayAdmitted: captured.ccSwitchTodayAdmitted
     }
   });
   assert.equal(anchored.today.clients.claude, 15);
@@ -177,9 +178,49 @@ test('anchored refresh changes CC-Switch Claude today by delta without counting 
       month: captured.windowsPeriods.month,
       allTime: captured.windowsPeriods.allTime,
       todayPartitions: captured.todayPartitions,
-      ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows
+      ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
+      ccSwitchTodayAdmitted: captured.ccSwitchTodayAdmitted
     }
   });
   assert.equal(unrelated.allTime.clients.claude, 15);
   assert.equal(unrelated.history.daily.find((day) => day.date === date)?.tokens, 15);
+});
+
+test('anchored refresh keeps CC-Switch today excluded when the full scan cannot date local Claude usage', async (t) => {
+  const { db, dbPath, cachePath } = fixture(t);
+  const now = new Date();
+  now.setHours(12, 0, 0, 0);
+  const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
+  addRollup(db, date, 'claude', 10);
+  let captured;
+  const options = {
+    clients: 'claude', allTimeSince: '2024-01-01', now,
+    commandTimeoutMs: 1000, deviceId: 'dev1',
+    platform: 'win32', ccSwitchClaudeEnabled: true, ccSwitchDbPath: dbPath, ccSwitchCachePath: cachePath,
+    historyEnabled: false, wslScanEnabled: false,
+    runTokscale: async ({ flags }) => flags.includes('--since')
+      ? { entries: [{ client: 'claude', model: 'claude-sonnet', input: 5, output: 0, cost: 0 }] }
+      : { entries: [] },
+    collectWslUsage: async () => ({ bundle: emptyWslBundle(), detected: [] }),
+    onAnchorComputed: (value) => { captured = value; }
+  };
+  const full = await collectUsageOnce(options);
+  assert.equal(captured.ccSwitchTodayAdmitted, false);
+  assert.equal(full.today.clients.claude || 0, 0);
+  assert.equal(full.allTime.clients.claude, 5);
+  addRollup(db, date, 'claude', 5);
+  const anchored = await collectUsageOnce({
+    ...options,
+    todayOnlyAnchor: {
+      dateKey: date,
+      today: captured.windowsPeriods.today,
+      month: captured.windowsPeriods.month,
+      allTime: captured.windowsPeriods.allTime,
+      todayPartitions: captured.todayPartitions,
+      ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
+      ccSwitchTodayAdmitted: captured.ccSwitchTodayAdmitted
+    }
+  });
+  assert.equal(anchored.today.clients.claude || 0, 0);
+  assert.equal(anchored.allTime.clients.claude, 5);
 });

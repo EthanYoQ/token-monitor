@@ -6279,7 +6279,7 @@ function render() {
     };
     els.codexAccountActivityNote.classList.toggle('hidden', !activity);
     els.codexAccountActivityNote.textContent = activity
-      ? `${t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified'])} ${activity.fetchedAt ? new Date(activity.fetchedAt).toLocaleString() : ''}`.trim()
+      ? `${t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified'])} ${activity.fetchedAt ? new Date(activity.fetchedAt).toLocaleString(currentLocale()) : ''}`.trim()
       : '';
   }
   const detailUnavailable = derivedPeriod
