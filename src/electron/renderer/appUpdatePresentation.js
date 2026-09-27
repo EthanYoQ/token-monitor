@@ -7,7 +7,6 @@
 })(typeof window !== 'undefined' ? window : null, function createAppUpdatePresentationApi() {
   const UNSUPPORTED_DESCRIPTION_KEYS = {
     unpackaged: 'settings.appUpdate.automaticUnsupportedUnpackaged',
-    'personal-build': 'settings.appUpdate.automaticUnsupportedPersonalBuild',
     'windows-portable': 'settings.appUpdate.automaticUnsupportedWindowsPortable',
     'linux-not-appimage': 'settings.appUpdate.automaticUnsupportedLinux'
   };

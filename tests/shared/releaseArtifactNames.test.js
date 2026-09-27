@@ -100,21 +100,17 @@ test('mac release scripts build native Apple Silicon and Intel artifacts with th
 
   const releaseTemplate = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'RELEASE_TEMPLATE.md'), 'utf8');
   const intelBullets = releaseTemplate.split('\n').filter((line) => line.startsWith('- **macOS Intel**'));
-  // A personal Windows build does not publish the upstream release template.
-  const releaseVersion = /-personal\./.test(rootPackage.version)
-    ? require('../../worker/package.json').version
-    : rootPackage.version;
-  const intelDmg = `Token-Monitor-${releaseVersion}-x64.dmg`;
+  const intelDmg = `Token-Monitor-${rootPackage.version}-x64.dmg`;
   assert.equal(intelBullets.length, 5);
   assert.ok(intelBullets.every((line) => line.split(intelDmg).length === 3));
-  assert.ok(intelBullets.every((line) => line.includes(`/download/v${releaseVersion}/`)));
+  assert.ok(intelBullets.every((line) => line.includes(`/download/v${rootPackage.version}/`)));
   const fullChangelogSummaries = releaseTemplate
     .split('\n')
     .filter((line) => line.startsWith('<summary><strong>Full Changelog:</strong>'));
   assert.equal(fullChangelogSummaries.length, 1);
   assert.match(fullChangelogSummaries[0], />v\d+\.\d+\.\d+\.\.\.v\d+\.\d+\.\d+<\/a>/);
   assert.match(fullChangelogSummaries[0], /https:\/\/github\.com\/Javis603\/token-monitor\/compare\/v\d+\.\d+\.\d+\.\.\.v\d+\.\d+\.\d+/);
-  assert.ok(fullChangelogSummaries[0].includes(`v${releaseVersion}`));
+  assert.ok(fullChangelogSummaries[0].includes(`v${rootPackage.version}`));
   assert.match(
     releaseTemplate,
     /---\s*<details>\s*<summary><strong>Full Changelog:<\/strong> <a href="[^"]+">v\d+\.\d+\.\d+\.\.\.v\d+\.\d+\.\d+<\/a><\/summary>\s*<!-- github-generated-release-notes -->\s*<\/details>\s*<details>\s*<summary>繁體中文 · 한국어 · 日本語<\/summary>/

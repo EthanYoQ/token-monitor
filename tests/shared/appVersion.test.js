@@ -4,7 +4,6 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
-const semver = require('semver');
 
 const rootPackage = require('../../package.json');
 const workerPackage = require('../../worker/package.json');
@@ -16,11 +15,9 @@ test('shared app version matches the root package version', () => {
 });
 
 test('worker package metadata stays aligned with the root package version', () => {
-  const workerVersion = /-personal\./.test(rootPackage.version) ? workerPackage.version : rootPackage.version;
-  assert.equal(workerPackage.version, workerVersion);
-  assert.equal(workerLock.version, workerVersion);
-  assert.equal(workerLock.packages[''].version, workerVersion);
-  if (/-personal\./.test(rootPackage.version)) assert.ok(semver.lt(workerVersion, rootPackage.version));
+  assert.equal(workerPackage.version, rootPackage.version);
+  assert.equal(workerLock.version, rootPackage.version);
+  assert.equal(workerLock.packages[''].version, rootPackage.version);
 });
 
 test('headless agent dry-run reports the package version', async () => {

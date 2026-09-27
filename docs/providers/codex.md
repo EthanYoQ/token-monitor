@@ -12,11 +12,11 @@ read_when:
 
 Codex combines a tokscale-backed usage client, local rollout enrichment and a multi-account limits provider. Keep those data planes separate even though they share the `codex` id.
 
-## Account activity in the personal Windows build
+## Optional account activity
 
-The personal build can read `tokscale codex activity --json`, backed by Codex app-server `account/usage/read`, every 15 minutes. The validated lifetime total is saved under the hashed live account identity and replaces local Codex in the **All Time display projection** once the daily buckets add to that lifetime total and the selected start date covers them. It is never uploaded as per-device usage, assigned to a model/project/session, or added on top of local Codex. Device, model, project and cost details remain local and need not add up to the account total. Other periods and daily history remain local because the account API does not document bucket timezone semantics. If another synced device contributes Codex or multiple logins have been observed locally, the account overlap is unknown and the projection retains the original aggregate. A lower lifetime reading requires a matching second live read; an older timestamp is ignored. A reading older than one hour is marked stale and is only the last known total.
+When enabled in Settings, the app can read `tokscale codex activity --json`, backed by Codex app-server `account/usage/read`, every 15 minutes. The validated lifetime total is saved under the hashed live account identity and replaces local Codex in the **All Time display projection** once the daily buckets add to that lifetime total and the selected start date covers them. It is never uploaded as per-device usage, assigned to a model/project/session, or added on top of local Codex. Device, model, project and cost details remain local and need not add up to the account total. Other periods and daily history remain local because the account API does not document bucket timezone semantics. If another synced device contributes Codex or multiple logins have been observed locally, the account overlap is unknown and the projection retains the original aggregate. A lower lifetime reading requires a matching second live read; an older timestamp is ignored. A reading older than one hour is marked stale and is only the last known total.
 
-The account total is disabled by default in upstream builds. Personal builds enable it when a setting is absent; the user can turn it off. A personal build also refuses upstream application updates, so installing a newer personal package is required to keep its patches.
+The account total is disabled by default. The user can enable it in Settings after verifying that local Codex history belongs to the current login.
 
 ## Session metadata and context
 

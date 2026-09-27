@@ -7,7 +7,6 @@ const test = require('node:test');
 
 const {
   appUpdateInstallSupport,
-  isPersonalBuildVersion,
   checkLatestRelease,
   classifyAppUpdateError,
   deriveAppUpdateAvailability,
@@ -112,16 +111,6 @@ test('appUpdateInstallSupport only enables packaged auto-updatable targets', () 
   }), { supported: false, reason: 'windows-portable' });
   assert.deepEqual(appUpdateInstallSupport({ isPackaged: true, platform: 'linux', env: {} }), { supported: false, reason: 'linux-not-appimage' });
   assert.deepEqual(appUpdateInstallSupport({ isPackaged: true, platform: 'linux', env: { APPIMAGE: '/tmp/Token Monitor.AppImage' } }), { supported: true, reason: '' });
-});
-
-test('personal Windows build cannot install an upstream update over its patches', () => {
-  assert.equal(isPersonalBuildVersion('0.63.1-personal.1'), true);
-  assert.deepEqual(appUpdateInstallSupport({
-    isPackaged: true, platform: 'win32', env: {}, version: '0.63.1-personal.1'
-  }), { supported: false, reason: 'personal-build' });
-  assert.deepEqual(appUpdateInstallSupport({
-    isPackaged: true, platform: 'win32', env: {}, version: '0.63.1'
-  }), { supported: true, reason: '' });
 });
 
 test('shouldSkipAppUpdateCheck refreshes cached update prompts sooner than the normal cooldown', () => {

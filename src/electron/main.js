@@ -175,7 +175,6 @@ const {
 } = require('../shared/tokscaleUpdater');
 const {
   appUpdateInstallSupport,
-  isPersonalBuildVersion,
   classifyAppUpdateError,
   checkLatestRelease,
   deriveAppUpdateAvailability,
@@ -609,7 +608,7 @@ function defaultSettings() {
     showHomeLimitProviderNames: false,
     projectsEnabled: parseBoolean(process.env.TOKEN_MONITOR_PROJECTS_ENABLED, true),
     historyEnabled: true,
-    codexAccountActivityEnabled: process.platform === 'win32' && /-personal\./.test(appVersion()),
+    codexAccountActivityEnabled: false,
     historyIntervalMs: normalizeHistoryIntervalMs(process.env.TOKEN_MONITOR_HISTORY_INTERVAL_MS),
     sessionUsageArchiveEnabled: parseBoolean(process.env.TOKEN_MONITOR_SESSION_USAGE_ARCHIVE_ENABLED, true),
     wslScanEnabled: parseBoolean(process.env.TOKEN_MONITOR_WSL_SCAN, true),
@@ -777,7 +776,7 @@ function electronUsageConfig(errorPrefix) {
     watchTriggersCollection: collectorWatchTriggersCollection(),
     intervalRequiresActivity: collectorIntervalRequiresActivity(),
     watchDebounceMs: 1500,
-    ccSwitchClaudeEnabled: process.platform === 'win32' && /-personal\./.test(appVersion()),
+    ccSwitchClaudeEnabled: process.platform === 'win32' && parseBoolean(process.env.TOKEN_MONITOR_CC_SWITCH_CLAUDE, false),
     dailyHistoryArchiveWriteEnabled: () => !isExternalAgentActive(),
     onError: (error, reason) => console.log(`[${errorPrefix}] ${reason}: ${error.message}`),
     logger: (message) => console.log(`[${errorPrefix}] ${message}`)
@@ -6071,9 +6070,9 @@ async function checkAppUpdateProvider() {
 function deriveAppUpdateState() {
   const block = settings?.appUpdate || {};
   const currentVersion = app.getVersion();
-  const latest = isPersonalBuildVersion(currentVersion) ? null : block.lastKnownLatest || null;
+  const latest = block.lastKnownLatest || null;
   const dismissedVersion = block.dismissedVersion || null;
-  const installSupport = appUpdateInstallSupport({ isPackaged: app.isPackaged, platform: process.platform, env: process.env, version: currentVersion });
+  const installSupport = appUpdateInstallSupport({ isPackaged: app.isPackaged, platform: process.platform, env: process.env });
   const availability = deriveAppUpdateAvailability({
     currentVersion,
     latest,
@@ -6134,7 +6133,6 @@ function sendAppUpdatePush() {
 }
 
 async function runAppUpdateCheck({ force = false, bypassCooldown = false } = {}) {
-  if (isPersonalBuildVersion(app.getVersion())) return deriveAppUpdateState();
   // An outstanding install owns the updater until the guard is idle again.
   // electron-updater reports a failed check by emitting on the same global 'error'
   // event an install failure arrives on -- checkForUpdates() emits there and
@@ -6234,7 +6232,6 @@ function maybeRunBackgroundUpdateCheck() {
 }
 
 function startAppUpdateBackgroundChecks() {
-  if (isPersonalBuildVersion(app.getVersion())) return;
   if (appUpdateBackgroundTimer) return;
   appUpdateBackgroundTimer = setInterval(maybeRunBackgroundUpdateCheck, 60 * 60 * 1000);
   appUpdateBackgroundTimer.unref?.();
@@ -6252,7 +6249,7 @@ function dismissAppUpdateVersion(version) {
 }
 
 async function downloadAndPrepareAppUpdate() {
-  const support = appUpdateInstallSupport({ isPackaged: app.isPackaged, platform: process.platform, env: process.env, version: app.getVersion() });
+  const support = appUpdateInstallSupport({ isPackaged: app.isPackaged, platform: process.platform, env: process.env });
   if (!support.supported) {
     setNativeAppUpdateState({ phase: 'error', error: support.reason || 'unsupported-platform', progress: null });
     return deriveAppUpdateState();
@@ -6306,7 +6303,6 @@ async function downloadAndPrepareAppUpdate() {
 }
 
 async function installDownloadedAppUpdate() {
-  if (isPersonalBuildVersion(app.getVersion())) return deriveAppUpdateState();
   // The other half of the same rule. Refusing new operations during the install
   // only holds the boundary if nothing was already running when it started, and a
   // check begun a moment earlier would still be reporting on the shared event.

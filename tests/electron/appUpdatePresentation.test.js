@@ -263,7 +263,6 @@ test('supported idle builds keep automatic downloads available when switched off
 test('unsupported automatic download controls are off, disabled, and explain why', () => {
   const reasons = new Map([
     ['unpackaged', 'settings.appUpdate.automaticUnsupportedUnpackaged'],
-    ['personal-build', 'settings.appUpdate.automaticUnsupportedPersonalBuild'],
     ['windows-portable', 'settings.appUpdate.automaticUnsupportedWindowsPortable'],
     ['linux-not-appimage', 'settings.appUpdate.automaticUnsupportedLinux'],
     ['unsupported-platform', 'settings.appUpdate.automaticUnsupported']
