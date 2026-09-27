@@ -86,7 +86,7 @@ test('local Claude sessions exclude overlapping CC-Switch days; unattributed tot
     clients: { claude: 5 },
     sessions: { 'claude:s1': {
       client: 'claude', totalTokens: 5,
-      startedAt: '2026-05-05T08:00:00Z', lastUsedAt: '2026-05-06T08:00:00Z'
+      startedAt: '2026-05-05T08:00:00', lastUsedAt: '2026-05-06T08:00:00'
     } }
   };
   assert.deepEqual(admittedCcSwitchClaudeRows(rows, local).map((row) => row.date), ['2026-05-04']);
