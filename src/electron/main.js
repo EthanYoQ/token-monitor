@@ -1971,10 +1971,8 @@ function isBoundsOnScreen(bounds) {
       x: bounds.x, y: bounds.y, width: bounds.width || 1, height: bounds.height || 1
     });
     const wa = display.workArea;
-    return bounds.x + bounds.width > wa.x &&
-      bounds.x < wa.x + wa.width &&
-      bounds.y + bounds.height > wa.y &&
-      bounds.y < wa.y + wa.height;
+    return Math.min(bounds.x + bounds.width, wa.x + wa.width) - Math.max(bounds.x, wa.x) >= 32 &&
+      Math.min(bounds.y + bounds.height, wa.y + wa.height) - Math.max(bounds.y, wa.y) >= 32;
   } catch (_) { return false; }
 }
 
@@ -6469,6 +6467,10 @@ function createWindow(boundsOverride, options = {}) {
       screen,
       getSettings: () => settings,
       save: saveSettings,
+      reducedMotion: () => motionPreferenceApi.shouldReduceMotion(
+        settings?.reduceMotion,
+        systemPreferences.getAnimationSettings?.().prefersReducedMotion === true
+      ),
       isForegroundFullscreen: isOtherAppFullscreen,
       onState: (state) => {
         if (!win.isDestroyed()) win.webContents.send('window:autoHideState', state);

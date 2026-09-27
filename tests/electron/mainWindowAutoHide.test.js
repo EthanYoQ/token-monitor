@@ -42,7 +42,7 @@ function fixture(initial = {}) {
   const calls = [];
   let saves = 0;
   win.isDestroyed = () => false;
-  win.isVisible = () => true;
+  win.isVisible = () => initial.visible !== false;
   win.isMinimized = () => false;
   win.isMaximized = () => maximized;
   win.isFullScreen = () => false;
@@ -52,7 +52,7 @@ function fixture(initial = {}) {
   let displays = [display];
   screen.getAllDisplays = () => displays;
   screen.getCursorScreenPoint = () => cursor;
-  const controller = createMainWindowAutoHide({ window: win, screen, getSettings: () => settings, save: () => { saves += 1; }, platform: 'win32', animationMs: 0, setInterval: () => 1, clearInterval: () => {}, isForegroundFullscreen: () => fullScreen });
+  const controller = createMainWindowAutoHide({ window: win, screen, getSettings: () => settings, save: () => { saves += 1; }, platform: 'win32', animationMs: initial.animationMs ?? 0, reducedMotion: () => initial.reducedMotion === true, setInterval: () => 1, clearInterval: () => {}, isForegroundFullscreen: () => fullScreen });
   win.on('moved', () => controller.onMoved());
   return { controller, settings, win, screen, calls, saves: () => saves, setCursor: (point) => { cursor = point; }, setFullscreen: (value) => { fullScreen = value; }, setMaximized: (value) => { maximized = value; }, resize: (next) => { bounds = next; controller.onResized(); }, setDisplays: (next) => { displays = next; screen.emit('display-removed'); }, bounds: () => bounds };
 }
@@ -84,6 +84,47 @@ test('active reveal defeats a queued hide and keeps the window reachable', () =>
   assert.equal(f.bounds().x, 0);
   f.controller.tick();
   assert.equal(f.bounds().x, 0);
+  f.controller.dispose();
+});
+
+test('a late duplicate moved event cannot abandon a hidden edge before hover reveal', async () => {
+  const f = fixture();
+  f.win.setBounds({ x: 1558, y: 100, width: 360, height: 600 });
+  f.controller.onMoveFinished();
+  f.controller.hide();
+  f.win.emit('moved');
+  assert.deepEqual(f.controller.state(), { side: 'right', hidden: true });
+  f.setCursor({ x: 1916, y: 150 });
+  f.controller.tick();
+  await new Promise((resolve) => setTimeout(resolve, 190));
+  assert.deepEqual(f.controller.state(), { side: 'right', hidden: false });
+  assert.equal(f.bounds().x, 1560);
+  f.controller.dispose();
+});
+
+test('a startup moved notification before show does not clear its restored side', () => {
+  const f = fixture({ visible: false, settings: { mainWindowAutoHideSide: 'right', windowBounds: { x: 1560, y: 100, width: 360, height: 600 } }, bounds: { x: 1560, y: 100, width: 360, height: 600 } });
+  f.controller.sync();
+  f.win.emit('moved');
+  f.win.setBounds({ x: 1560, y: 101, width: 360, height: 600 });
+  assert.deepEqual(f.controller.state(), { side: 'right', hidden: false });
+  assert.equal(f.settings.mainWindowAutoHideSide, 'right');
+  f.controller.dispose();
+});
+
+test('a completed manual move snaps without an extra debounce', () => {
+  const f = fixture();
+  f.win.setBounds({ x: 2, y: 100, width: 360, height: 600 });
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: false });
+  f.controller.dispose();
+});
+
+test('reduced motion moves the whole window directly to its target', () => {
+  const f = fixture({ animationMs: 170, reducedMotion: true });
+  f.win.setBounds({ x: 2, y: 100, width: 360, height: 600 });
+  assert.equal(f.bounds().x, 0);
+  f.controller.hide();
+  assert.equal(f.bounds().x, -352);
   f.controller.dispose();
 });
 

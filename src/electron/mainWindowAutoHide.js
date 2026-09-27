@@ -112,6 +112,7 @@ function createMainWindowAutoHide(options) {
   const setIntervalFn = options.setInterval || setInterval;
   const clearIntervalFn = options.clearInterval || clearInterval;
   const animationMs = options.animationMs === undefined ? 170 : options.animationMs;
+  const reducedMotion = options.reducedMotion || (() => false);
   const fullscreen = options.isForegroundFullscreen || (() => false);
   let side = null;
   let expanded = null;
@@ -120,8 +121,8 @@ function createMainWindowAutoHide(options) {
   let activeReveal = false;
   let interacting = false;
   const expectedMoves = [];
+  let lastProgrammaticBounds = null;
   let pollTimer = null;
-  let moveTimer = null;
   let resizePersistTimer = null;
   let intentTimer = null;
   let animationTimer = null;
@@ -143,8 +144,9 @@ function createMainWindowAutoHide(options) {
     clearAnimation();
     const start = win.getBounds();
     if (sameBounds(start, target)) return;
-    if (instant || animationMs <= 0) {
+    if (instant || animationMs <= 0 || reducedMotion()) {
       expectedMoves.push(target);
+      lastProgrammaticBounds = target;
       win.setBounds(target);
       return;
     }
@@ -161,6 +163,7 @@ function createMainWindowAutoHide(options) {
       };
       expectedMoves.push(next);
       if (expectedMoves.length > 32) expectedMoves.shift();
+      lastProgrammaticBounds = next;
       win.setBounds(next);
       if (progress === 1) clearAnimation();
     };
@@ -199,8 +202,6 @@ function createMainWindowAutoHide(options) {
     clearIntent();
     clearAnimation();
     expectedMoves.length = 0;
-    if (moveTimer) clearTimeoutFn(moveTimer);
-    moveTimer = null;
     if (pollTimer) clearIntervalFn(pollTimer);
     pollTimer = null;
     const remembered = target;
@@ -243,14 +244,17 @@ function createMainWindowAutoHide(options) {
 
   function onMoved() {
     if (disposed || win.isDestroyed()) return;
+    if (side && !win.isVisible()) return;
     const now = win.getBounds();
     const expectedIndex = expectedMoves.findIndex((bounds) => sameBounds(now, bounds));
     if (expectedIndex !== -1) { expectedMoves.splice(0, expectedIndex + 1); return; }
+    if (sameBounds(now, lastProgrammaticBounds)) return;
+    if (side && expanded && display && sameBounds(now, hidden ? hiddenTarget(expanded, display.workArea, side) : expanded)) return;
+    lastProgrammaticBounds = null;
     clearAnimation();
     if (side && !eligible()) { release(true); return; }
     if (side) release(false);
-    if (moveTimer) clearTimeoutFn(moveTimer);
-    moveTimer = setTimeoutFn(() => { moveTimer = null; onMoveFinished(); }, 300);
+    onMoveFinished();
   }
 
   function onResized() {
