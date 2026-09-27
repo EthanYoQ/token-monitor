@@ -69,6 +69,25 @@ test('CC-Switch snapshot survives deletion of the original database', (t) => {
   assert.equal(loadCcSwitchClaudeRows({ dbPath, cachePath })[0].input, 25);
 });
 
+test('a successful empty CC-Switch read clears the previous snapshot', (t) => {
+  const { db, dbPath, cachePath } = fixture(t);
+  addRollup(db, '2026-05-04', 'claude', 25);
+  assert.equal(loadCcSwitchClaudeRows({ dbPath, cachePath }).length, 1);
+  db.exec('DELETE FROM usage_daily_rollups');
+  assert.deepEqual(loadCcSwitchClaudeRows({ dbPath, cachePath }), []);
+  db.close();
+  fs.unlinkSync(dbPath);
+  assert.deepEqual(loadCcSwitchClaudeRows({ dbPath, cachePath }), []);
+});
+
+test('CC-Switch snapshot cannot supply rows for another database path', (t) => {
+  const { db, dbPath, cachePath } = fixture(t);
+  addRollup(db, '2026-05-04', 'claude', 25);
+  assert.equal(loadCcSwitchClaudeRows({ dbPath, cachePath }).length, 1);
+  const moved = path.join(path.dirname(dbPath), 'other.db');
+  assert.deepEqual(loadCcSwitchClaudeRows({ dbPath: moved, cachePath }), []);
+});
+
 test('a cache write failure does not hide a live CC-Switch reading', (t) => {
   const { db, dbPath, cachePath } = fixture(t);
   addRollup(db, '2026-05-04', 'claude', 25);

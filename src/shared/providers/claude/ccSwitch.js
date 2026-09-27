@@ -65,14 +65,14 @@ function readCcSwitchClaudeRows(dbPath = DB_PATH) {
 
 function loadCcSwitchClaudeRows(options = {}) {
   const cachePath = options.cachePath || path.join(sharedDataDir(), 'cc-switch-claude-usage.json');
+  const dbPath = path.resolve(options.dbPath || DB_PATH);
   try {
-    if (fs.existsSync(options.dbPath || DB_PATH)) {
-      const rows = readCcSwitchClaudeRows(options.dbPath || DB_PATH);
-      if (rows.length === 0 && fs.existsSync(cachePath)) throw new Error('empty CC-Switch usage snapshot');
+    if (fs.existsSync(dbPath)) {
+      const rows = readCcSwitchClaudeRows(dbPath);
       try {
         fs.mkdirSync(path.dirname(cachePath), { recursive: true });
         const pending = `${cachePath}.tmp`;
-        fs.writeFileSync(pending, JSON.stringify({ version: 1, rows }));
+        fs.writeFileSync(pending, JSON.stringify({ version: 2, dbPath, rows }));
         fs.renameSync(pending, cachePath);
       } catch (error) {
         options.logger?.(`CC-Switch usage snapshot write failed: ${error.message}`);
@@ -84,7 +84,7 @@ function loadCcSwitchClaudeRows(options = {}) {
   }
   try {
     const saved = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-    if (saved.version === 1 && Array.isArray(saved.rows)) return saved.rows;
+    if (saved.version === 2 && saved.dbPath === dbPath && Array.isArray(saved.rows)) return saved.rows;
   } catch (_) {}
   return [];
 }
