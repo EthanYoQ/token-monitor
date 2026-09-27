@@ -369,7 +369,9 @@ window.tokenMonitor.onAutoHideState?.(({ side, hidden }) => {
 document.addEventListener('pointerdown', () => { autoHidePointerDown = true; syncAutoHideInteraction(); }, true);
 document.addEventListener('pointerup', () => { autoHidePointerDown = false; syncAutoHideInteraction(); }, true);
 document.addEventListener('pointercancel', () => { autoHidePointerDown = false; syncAutoHideInteraction(); }, true);
-document.addEventListener('pointerleave', syncAutoHideInteraction, true);
+document.addEventListener('pointerout', (event) => {
+  if (event.relatedTarget === null) syncAutoHideInteraction();
+});
 window.addEventListener('blur', () => { autoHidePointerDown = false; syncAutoHideInteraction(); });
 document.addEventListener('focusin', syncAutoHideInteraction, true);
 document.addEventListener('focusout', () => setTimeout(syncAutoHideInteraction, 0), true);

@@ -6471,7 +6471,7 @@ function createWindow(boundsOverride, options = {}) {
         settings?.reduceMotion,
         systemPreferences.getAnimationSettings?.().prefersReducedMotion === true
       ),
-      isForegroundFullscreen: isOtherAppFullscreen,
+      isForegroundFullscreen: (display) => isOtherAppFullscreen(screen.dipToScreenRect(null, display.bounds)),
       onState: (state) => {
         if (!win.isDestroyed()) win.webContents.send('window:autoHideState', state);
       }

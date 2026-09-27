@@ -27,7 +27,7 @@ function loadProbe() {
   return probe;
 }
 
-function isOtherAppFullscreen() {
+function isOtherAppFullscreen(dockedBounds) {
   if (process.platform !== 'win32') return false;
   const api = loadProbe();
   if (!api) return false;
@@ -44,6 +44,10 @@ function isOtherAppFullscreen() {
     const info = { cbSize: api.monitorInfoSize };
     if (!api.GetMonitorInfo(monitor, info)) return false;
     const screen = info.rcMonitor;
+    if (!dockedBounds || Math.abs(screen.left - dockedBounds.x) > 2
+      || Math.abs(screen.top - dockedBounds.y) > 2
+      || Math.abs(screen.right - dockedBounds.x - dockedBounds.width) > 2
+      || Math.abs(screen.bottom - dockedBounds.y - dockedBounds.height) > 2) return false;
     return bounds.left <= screen.left + 2 && bounds.top <= screen.top + 2
       && bounds.right >= screen.right - 2 && bounds.bottom >= screen.bottom - 2;
   } catch {
