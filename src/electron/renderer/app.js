@@ -1443,13 +1443,10 @@ function renderSettingsAppUpdateRow() {
   // an attempt is spent, so without this the button would sit live and do nothing.
   // It is not folded into installBusy, which would disable View release along with
   // it and take away the one path a spent attempt leaves working.
-  els.appUpdateCheckButton.disabled = Boolean(s.installSupportReason === 'personal-build' || s.checking || s.installBusy || s.installRetryBlocked);
+  els.appUpdateCheckButton.disabled = Boolean(s.checking || s.installBusy || s.installRetryBlocked);
   els.appUpdateCheckButton.textContent = s.checking ? t('settings.appUpdate.checking') : t('settings.appUpdate.check');
   renderAppUpdateNotes(s);
-  if (s.installSupportReason === 'personal-build') {
-    els.appUpdateMessage.textContent = t('settings.appUpdate.automaticUnsupportedPersonalBuild');
-    els.appUpdateMessage.classList.remove('error');
-  } else if (s.installPhase === 'downloading') {
+  if (s.installPhase === 'downloading') {
     const percent = Number.isFinite(s.installProgress) ? Math.round(s.installProgress) : 0;
     els.appUpdateMessage.textContent = t('settings.appUpdate.downloading', { percent });
     els.appUpdateMessage.classList.remove('error');
