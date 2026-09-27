@@ -1438,6 +1438,7 @@ module.exports = {
   fetchCodexLimits,
   mapCodexRateLimitsToProvider,
   normalizeCodexManagedAccounts,
+  readLiveCodexIdentity,
   readCodexRpcWithCommand,
   runCodexLogin
 };

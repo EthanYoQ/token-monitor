@@ -403,6 +403,8 @@ Object.assign(els, {
   collectionCadenceInput: document.getElementById('collectionCadenceInput'),
   collectionCadenceNote: document.getElementById('collectionCadenceNote'),
   sessionUsageArchiveInput: document.getElementById('sessionUsageArchiveInput'),
+  codexAccountActivityInput: document.getElementById('codexAccountActivityInput'),
+  codexAccountActivityNote: document.getElementById('codexAccountActivityNote'),
   sessionUsageArchiveStatus: document.getElementById('sessionUsageArchiveStatus'),
   reduceMotionInputs: Array.from(document.querySelectorAll('input[name="reduceMotionOption"]')),
   windowsBackdropRow: document.getElementById('windowsBackdropRow'),
@@ -1441,10 +1443,13 @@ function renderSettingsAppUpdateRow() {
   // an attempt is spent, so without this the button would sit live and do nothing.
   // It is not folded into installBusy, which would disable View release along with
   // it and take away the one path a spent attempt leaves working.
-  els.appUpdateCheckButton.disabled = Boolean(s.checking || s.installBusy || s.installRetryBlocked);
+  els.appUpdateCheckButton.disabled = Boolean(s.installSupportReason === 'personal-build' || s.checking || s.installBusy || s.installRetryBlocked);
   els.appUpdateCheckButton.textContent = s.checking ? t('settings.appUpdate.checking') : t('settings.appUpdate.check');
   renderAppUpdateNotes(s);
-  if (s.installPhase === 'downloading') {
+  if (s.installSupportReason === 'personal-build') {
+    els.appUpdateMessage.textContent = t('settings.appUpdate.automaticUnsupportedPersonalBuild');
+    els.appUpdateMessage.classList.remove('error');
+  } else if (s.installPhase === 'downloading') {
     const percent = Number.isFinite(s.installProgress) ? Math.round(s.installProgress) : 0;
     els.appUpdateMessage.textContent = t('settings.appUpdate.downloading', { percent });
     els.appUpdateMessage.classList.remove('error');
@@ -6266,6 +6271,20 @@ function render() {
   if (state.openSession) { els.sessionDetail.classList.remove('hidden'); els.sessionDetailHead.classList.remove('hidden'); } else { els.sessionDetail.classList.add('hidden'); els.sessionDetailHead.classList.add('hidden'); }
   const period = state.stats.periods?.[state.period] || { totalTokens: 0, costUsd: 0, clients: {} };
   const fixedUnavailable = derivedPeriod && state.fixedPeriodSnapshot?.status !== 'ready';
+  if (els.codexAccountActivityNote) {
+    const activity = state.period === 'allTime' ? state.stats.codexAccountActivity : null;
+    const activityMessageKeys = {
+      applied: 'usage.codexAccountActivity.applied',
+      conflict: 'usage.codexAccountActivity.conflict',
+      stale: 'usage.codexAccountActivity.stale',
+      'scope-unverified': 'usage.codexAccountActivity.scopeUnverified',
+      'range-unverified': 'usage.codexAccountActivity.rangeUnverified'
+    };
+    els.codexAccountActivityNote.classList.toggle('hidden', !activity);
+    els.codexAccountActivityNote.textContent = activity
+      ? `${t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified'])} ${activity.fetchedAt ? new Date(activity.fetchedAt).toLocaleString() : ''}`.trim()
+      : '';
+  }
   const detailUnavailable = derivedPeriod
     && !fixedPeriodRangesApi.supportsBreakdown(state.period, state.breakdown, {
       deviceHistoriesAvailable: Array.isArray(state.fixedPeriodHistory?.deviceHistories)
@@ -7998,6 +8017,7 @@ function syncSettingsForm() {
   }
   if (els.wslScanInput) els.wslScanInput.checked = state.settings.wslScanEnabled !== false;
   if (els.sessionUsageArchiveInput) els.sessionUsageArchiveInput.checked = state.settings.sessionUsageArchiveEnabled !== false;
+  if (els.codexAccountActivityInput) els.codexAccountActivityInput.checked = state.settings.codexAccountActivityEnabled === true;
   renderAutomaticAppUpdateControl();
   allTimeSessions.ensure();
   renderSessionUsageArchiveStatus();
@@ -11373,6 +11393,9 @@ els.collectionCadenceInput?.addEventListener('change', async () => {
 });
 els.sessionUsageArchiveInput?.addEventListener('change', async () => {
   await saveSettings({ sessionUsageArchiveEnabled: els.sessionUsageArchiveInput.checked });
+});
+els.codexAccountActivityInput?.addEventListener('change', async () => {
+  await saveSettings({ codexAccountActivityEnabled: els.codexAccountActivityInput.checked });
 });
 els.clearSessionUsageArchiveButton?.addEventListener('click', async () => {
   if (!window.confirm(t('settings.collection.sessionArchiveConfirm'))) return;

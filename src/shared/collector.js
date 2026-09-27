@@ -315,6 +315,16 @@ function spawnTokscaleJson(userArgs, commandTimeoutMs, command = tokscaleCommand
   });
 }
 
+function readCodexAccountActivity(options = {}) {
+  return spawnTokscaleJson(
+    ['codex', 'activity', '--json'],
+    options.commandTimeoutMs || 15_000,
+    tokscaleCommand(),
+    options.signal,
+    { operation: 'Codex account activity' }
+  );
+}
+
 const TOKSCALE_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;
 const MAX_TOKSCALE_STDERR_LENGTH = 64 * 1024;
 // tokscale rejects an unknown --client value with this exact exit code (see
@@ -3408,6 +3418,7 @@ module.exports = {
   normalizePromaPricing,
   pruneAttemptedResetBoundaries,
   readDownloadedPointer,
+  readCodexAccountActivity,
   resolvePlatformBinary,
   resolvePromaPricing,
   resetPromaPricingCache,

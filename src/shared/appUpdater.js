@@ -13,6 +13,7 @@ const MAX_RELEASE_NOTE_ITEMS = 12;
 const MAX_RELEASE_NOTE_ITEM_CHARS = 600;
 const MAX_RELEASE_NOTE_HTML_MARKUP_CHARS = 1024;
 const TRAILING_PULL_REQUEST_REFERENCES_RE = /\s*(?:\(\s*#\d+(?:\s*,\s*#\d+)*\s*\)|（\s*#\d+(?:\s*[、，,]\s*#\d+)*\s*）)\s*$/;
+const isPersonalBuildVersion = (version) => /-personal\./.test(String(version || ''));
 const RELEASE_NOTE_HTML_TAGS = new Set([
   'a', 'abbr', 'article', 'aside', 'b', 'blockquote', 'br', 'caption', 'cite', 'code',
   'col', 'colgroup', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em', 'figcaption',
@@ -27,8 +28,10 @@ const RELEASE_NOTE_VOID_HTML_TAGS = new Set(['area', 'base', 'br', 'col', 'embed
 function appUpdateInstallSupport({
   isPackaged = false,
   platform = process.platform,
-  env = process.env
+  env = process.env,
+  version = ''
 } = {}) {
+  if (isPersonalBuildVersion(version)) return { supported: false, reason: 'personal-build' };
   if (!isPackaged) return { supported: false, reason: 'unpackaged' };
   if (platform === 'darwin') return { supported: true, reason: '' };
   if (platform === 'win32') {
@@ -624,6 +627,7 @@ async function checkLatestRelease(currentVersion) {
 
 module.exports = {
   appUpdateInstallSupport,
+  isPersonalBuildVersion,
   installFailureErrorKind,
   updateInstallQuitPolicy,
   parseTag,
