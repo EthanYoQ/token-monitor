@@ -6,7 +6,6 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const { projectAccountActivityToHistory, normalizeAccountActivity } = require('../../src/shared/providers/codex/accountActivity');
-const { localDayKey } = require('../../src/shared/history');
 
 const rootDir = path.join(__dirname, '..', '..');
 const read = (...p) => fs.readFileSync(path.join(rootDir, ...p), 'utf8');
@@ -77,7 +76,7 @@ test('dashboard history uses the same validated account projection as Home', asy
   const main = read('src', 'electron', 'main.js');
   const body = /async function getDashboardHistory\(options = \{\}\)\s*\{[\s\S]*?\n\}/.exec(main)?.[0];
   assert.ok(body);
-  const today = localDayKey();
+  const today = new Date().toISOString().slice(0, 10);
   const month = today.slice(0, 7);
   const snapshot = normalizeAccountActivity({ codexAccountActivity: {
     status: 'available', source: 'codex-app-server', fetchedAt: '2026-09-28T04:00:00Z',
