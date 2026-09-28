@@ -13,6 +13,7 @@ const {
   applyAccountActivityToStats: applyAccountActivityToStatsRaw,
   projectAccountActivityToHistory
 } = require('../../src/shared/providers/codex/accountActivity');
+const { localDayKey } = require('../../src/shared/history');
 
 function applyAccountActivityToStats(stats, snapshot, since, deviceId = '', singleAccount = true, nowMs = Date.parse('2026-09-27T04:10:00Z')) {
   return applyAccountActivityToStatsRaw(stats, snapshot, since, deviceId, singleAccount, nowMs);
@@ -116,6 +117,40 @@ test('stale account history preserves the locally verified streaks', () => {
   const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
   assert.equal(projected.summary.currentStreak, 1);
   assert.equal(projected.summary.longestStreak, 1);
+});
+
+test('applied account Dashboard days use the account UTC boundary while stale days stay local', () => {
+  const previousTz = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    const nowMs = Date.parse('2026-10-02T00:30:00Z');
+    assert.equal(localDayKey(new Date(nowMs)), '2026-10-01');
+    const raw = activity(100, '2026-10-01');
+    raw.codexAccountActivity.dailyUsageBuckets = [
+      { startDate: '2026-10-01', tokens: 50 },
+      { startDate: '2026-10-02', tokens: 50 }
+    ];
+    const snapshot = normalizeAccountActivity(raw, 'account-a');
+    const history = {
+      daily: [{ date: '2026-10-01', tokens: 10, perClient: { codex: { tokens: 10 } } }],
+      monthly: [{ month: '2026-10', tokens: 10, perClient: { codex: { tokens: 10 } } }],
+      summary: { currentStreak: 1, longestStreak: 1 }
+    };
+    const account = { source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens };
+    const presented = { periods: { allTime: { totalTokens: 100 } }, codexAccountActivity: { ...account, status: 'applied' } };
+    const applied = projectAccountActivityToHistory(history, snapshot, presented, { nowMs });
+    assert.deepEqual(applied.daily.map((row) => row.date), ['2026-10-01', '2026-10-02']);
+    assert.equal(applied.summary.currentStreak, 2);
+    const stale = projectAccountActivityToHistory(history, snapshot, {
+      ...presented, codexAccountActivity: { ...account, status: 'stale' }
+    }, { nowMs });
+    assert.deepEqual(stale.daily.map((row) => row.date), ['2026-10-01']);
+    const overridden = projectAccountActivityToHistory(history, snapshot, presented, { nowMs, todayKey: '2026-10-01' });
+    assert.deepEqual(overridden.daily.map((row) => row.date), ['2026-10-01']);
+  } finally {
+    if (previousTz === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTz;
+  }
 });
 
 test('account activity exposes a streak through yesterday without changing local history', () => {

@@ -188,7 +188,9 @@ function projectAccountActivityToHistory(history, snapshot, presentedStats, opti
   const fullDaily = projectRows(history.daily, 'date', buckets);
   const monthly = projectRows(history.monthly, 'month', months);
   if (!fullDaily || !monthly) return history;
-  const today = String(options.todayKey || localDayKey()).slice(0, 10);
+  const now = new Date(options.nowMs ?? Date.now());
+  const today = String(options.todayKey || (account.status === 'applied'
+    ? now.toISOString().slice(0, 10) : localDayKey(now))).slice(0, 10);
   const streaks = computeStreaks(fullDaily, today);
   const currentStreak = streaks.currentStreak || computeStreaks(fullDaily, dayKeyAddDays(today, -1)).currentStreak;
   return {
