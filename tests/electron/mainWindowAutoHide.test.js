@@ -38,12 +38,18 @@ function fixture(initial = {}) {
   let cursor = { x: 600, y: 400 };
   let fullScreen = false;
   let maximized = false;
+  let minimized = false;
   const settings = { mainWindowAutoHideEnabled: true, windowBehavior: 'floating', ...initial.settings };
   const calls = [];
   let saves = 0;
   win.isDestroyed = () => false;
   win.isVisible = () => initial.visible !== false;
-  win.isMinimized = () => false;
+  win.isMinimized = () => minimized;
+  win.restore = () => {
+    minimized = false;
+    if (initial.restoreBounds) { bounds = { ...initial.restoreBounds }; win.emit('moved'); }
+    win.emit('restore');
+  };
   win.isMaximized = () => maximized;
   win.isFullScreen = () => false;
   win.getBounds = () => ({ ...bounds });
@@ -54,7 +60,7 @@ function fixture(initial = {}) {
   screen.getCursorScreenPoint = () => cursor;
   const controller = createMainWindowAutoHide({ window: win, screen, getSettings: () => settings, save: () => { saves += 1; }, platform: 'win32', animationMs: initial.animationMs ?? 0, reducedMotion: () => initial.reducedMotion === true, setInterval: () => 1, clearInterval: () => {}, isForegroundFullscreen: () => fullScreen });
   win.on('moved', () => controller.onMoved());
-  return { controller, settings, win, screen, calls, saves: () => saves, setCursor: (point) => { cursor = point; }, setFullscreen: (value) => { fullScreen = value; }, setMaximized: (value) => { maximized = value; }, resize: (next) => { bounds = next; controller.onResized(); }, setDisplays: (next) => { displays = next; screen.emit('display-removed'); }, bounds: () => bounds };
+  return { controller, settings, win, screen, calls, saves: () => saves, setCursor: (point) => { cursor = point; }, setFullscreen: (value) => { fullScreen = value; }, setMaximized: (value) => { maximized = value; }, setMinimized: (value) => { minimized = value; }, resize: (next) => { bounds = next; controller.onResized(); }, setDisplays: (next) => { displays = next; screen.emit('display-removed'); }, bounds: () => bounds };
 }
 
 test('enabling does not snap an ordinary window; dragging docks and disabling restores it', () => {
@@ -99,6 +105,52 @@ test('a late duplicate moved event cannot abandon a hidden edge before hover rev
   await new Promise((resolve) => setTimeout(resolve, 190));
   assert.deepEqual(f.controller.state(), { side: 'right', hidden: false });
   assert.equal(f.bounds().x, 1560);
+  f.controller.dispose();
+});
+
+test('taskbar minimize preserves the hidden edge for hover after restore', async () => {
+  const f = fixture({ settings: { mainWindowAutoHideSide: 'left', windowBounds: { x: 0, y: 100, width: 360, height: 600 } }, bounds: { x: 0, y: 100, width: 360, height: 600 } });
+  f.controller.sync();
+  f.controller.hide();
+  f.setMinimized(true);
+  f.win.emit('moved');
+  f.controller.onResized();
+  f.controller.tick();
+  f.controller.sync();
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: true });
+  assert.equal(f.settings.mainWindowAutoHideSide, 'left');
+  f.setMinimized(false);
+  f.setCursor({ x: 3, y: 150 });
+  f.controller.tick();
+  await new Promise((resolve) => setTimeout(resolve, 190));
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: false });
+  assert.equal(f.bounds().x, 0);
+  f.controller.dispose();
+});
+
+test('minimizing a hidden edge restores and reveals the window', async () => {
+  const f = fixture({ settings: { mainWindowAutoHideSide: 'left', windowBounds: { x: 0, y: 100, width: 360, height: 600 } }, bounds: { x: 0, y: 100, width: 360, height: 600 } });
+  f.controller.sync();
+  f.controller.hide();
+  f.setMinimized(true);
+  f.controller.onMinimized();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(f.win.isMinimized(), false);
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: false });
+  assert.equal(f.bounds().x, 0);
+  f.controller.dispose();
+});
+
+test('restoration moving a hidden window to its dock does not forget the edge', async () => {
+  const expanded = { x: 0, y: 100, width: 360, height: 600 };
+  const f = fixture({ settings: { mainWindowAutoHideSide: 'left', windowBounds: expanded }, bounds: expanded, restoreBounds: expanded });
+  f.controller.sync();
+  f.controller.hide();
+  f.setMinimized(true);
+  f.controller.onMinimized();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: false });
+  assert.equal(f.settings.mainWindowAutoHideSide, 'left');
   f.controller.dispose();
 });
 

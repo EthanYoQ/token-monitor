@@ -245,6 +245,7 @@ function createMainWindowAutoHide(options) {
 
   function onMoved() {
     if (disposed || win.isDestroyed()) return;
+    if (win.isMinimized()) return;
     if (side && !win.isVisible()) return;
     const now = win.getBounds();
     const expectedIndex = expectedMoves.findIndex((bounds) => sameBounds(now, bounds));
@@ -260,6 +261,7 @@ function createMainWindowAutoHide(options) {
 
   function onResized() {
     if (!side || !expanded || !display || win.isDestroyed()) return;
+    if (win.isMinimized()) return;
     if (!eligible()) { release(true); return; }
     const now = win.getBounds();
     if (now.width === expanded.width && now.height === expanded.height) return;
@@ -294,8 +296,18 @@ function createMainWindowAutoHide(options) {
     return true;
   }
 
+  function onMinimized() {
+    if (!side || !hidden) return;
+    setTimeoutFn(() => {
+      if (disposed || !side || !hidden || win.isDestroyed() || !win.isMinimized()) return;
+      win.restore();
+      reveal({ active: true });
+    }, 0);
+  }
+
   function tick() {
     if (!side || disposed) return;
+    if (win.isMinimized()) { clearIntent(); return; }
     if (!eligible() || !win.isVisible()) { if (!eligible()) release(true); return; }
     const cursor = screen.getCursorScreenPoint();
     if (hidden) {
@@ -321,6 +333,7 @@ function createMainWindowAutoHide(options) {
 
   function sync() {
     if (disposed) return;
+    if (win.isMinimized()) return;
     if (pendingRestore && !win.isMaximized() && !win.isFullScreen() && !win.isMinimized()) {
       moveTo(visibleBounds(pendingRestore, screen.getAllDisplays()), true);
       pendingRestore = null;
@@ -362,7 +375,7 @@ function createMainWindowAutoHide(options) {
   screen.on('display-metrics-changed', onDisplayChange);
 
   return {
-    sync, onMoved, onResized, onMoveFinished, tick, hide, reveal,
+    sync, onMoved, onResized, onMoveFinished, onMinimized, tick, hide, reveal,
     isDocked: () => Boolean(side),
     state: () => ({ side, hidden }),
     expandedBounds: () => expanded,

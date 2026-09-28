@@ -6519,6 +6519,7 @@ function createWindow(boundsOverride, options = {}) {
   applyNativeMaterial();
   win.on('focus', () => {
     stopFloatingBubbleAutoCollapseTimer();
+    if (!win.isMinimized() && mainWindowAutoHide?.state().hidden) mainWindowAutoHide.reveal({ active: true });
   });
   win.on('blur', () => {
     nudgeTaskbarZOrder();
@@ -6528,9 +6529,13 @@ function createWindow(boundsOverride, options = {}) {
   win.on('resized', () => { mainWindowAutoHide?.onResized(); persistBoundsSoon(); syncTaskbarZOrder(); });
   win.on('moved', () => { mainWindowAutoHide?.onMoved(); persistBoundsSoon(); syncTaskbarZOrder(); });
   win.on('show', () => { syncTaskbarZOrder(); mainWindowAutoHide?.sync(); });
-  win.on('restore', () => { syncTaskbarZOrder(); mainWindowAutoHide?.sync(); });
+  win.on('restore', () => {
+    syncTaskbarZOrder();
+    mainWindowAutoHide?.sync();
+    if (mainWindowAutoHide?.state().hidden) mainWindowAutoHide.reveal({ active: true });
+  });
   win.on('hide', stopTaskbarZOrderKeeper);
-  win.on('minimize', stopTaskbarZOrderKeeper);
+  win.on('minimize', () => { stopTaskbarZOrderKeeper(); mainWindowAutoHide?.onMinimized(); });
   win.on('close', (event) => {
     if (quitRequested) return;
     const action = mainWindowCloseAction(settings, { platform: process.platform });
