@@ -52,6 +52,22 @@ function selectAccountActivity(current, incoming, { correctionConfirmed = false 
   return { snapshot: incoming, conflict: false };
 }
 
+function accountCurrentStreak(buckets, nowMs) {
+  const active = (buckets || []).filter((bucket) => bucket.tokens > 0);
+  if (active.length === 0) return 0;
+  const todayMs = Date.parse(`${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00Z`);
+  let expectedMs = Date.parse(`${active[active.length - 1].date}T00:00:00Z`);
+  if (todayMs - expectedMs < 0 || todayMs - expectedMs > 86400000) return 0;
+  let streak = 0;
+  for (let index = active.length - 1; index >= 0; index -= 1) {
+    const dayMs = Date.parse(`${active[index].date}T00:00:00Z`);
+    if (dayMs !== expectedMs) break;
+    streak += 1;
+    expectedMs -= 86400000;
+  }
+  return streak;
+}
+
 function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceId = '', singleAccount = true, nowMs = Date.now()) {
   if (!stats || !snapshot) return stats;
   if (!singleAccount) return { ...stats, codexAccountActivity: { status: 'scope-unverified', fetchedAt: snapshot.fetchedAt } };
@@ -118,7 +134,8 @@ function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceI
       lifetimeTokens: officialTokens,
       localDetailTokens: localTokens,
       detailsSuppressed: localTokens > officialTokens,
-      dateBoundary: 'source-defined'
+      dateBoundary: 'source-defined',
+      ...(status === 'applied' ? { currentStreak: accountCurrentStreak(snapshot.dailyUsageBuckets, nowMs) } : {})
     }
   };
   if (localTokens > officialTokens) delete result.allTimeSessionsView;

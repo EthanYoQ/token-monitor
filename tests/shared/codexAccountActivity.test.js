@@ -53,6 +53,25 @@ test('account total replaces local Codex without summing the two sources or chan
   assert.equal(shown.codexAccountActivity.unallocatedTokens, undefined);
 });
 
+test('account activity exposes a streak through yesterday without changing local history', () => {
+  const raw = activity(67_570, '2026-09-25');
+  raw.codexAccountActivity.fetchedAt = '2026-09-28T00:00:00Z';
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-25', tokens: 20_000 },
+    { startDate: '2026-09-26', tokens: 20_000 },
+    { startDate: '2026-09-27', tokens: 27_570 }
+  ];
+  const shown = applyAccountActivityToStats(stats(), normalizeAccountActivity(raw, 'account-a'),
+    '2024-01-01', '', true, Date.parse('2026-09-28T00:10:00Z'));
+  assert.equal(shown.codexAccountActivity.currentStreak, 3);
+  assert.equal(shown.historyPreview, undefined);
+  raw.codexAccountActivity.dailyUsageBuckets[1].tokens = 0;
+  raw.codexAccountActivity.dailyUsageBuckets[2].tokens += 20_000;
+  const gap = applyAccountActivityToStats(stats(), normalizeAccountActivity(raw, 'account-a'),
+    '2024-01-01', '', true, Date.parse('2026-09-28T00:10:00Z'));
+  assert.equal(gap.codexAccountActivity.currentStreak, 1);
+});
+
 test('incomplete daily buckets and a later requested start date cannot be advertised as account-wide', () => {
   const incomplete = activity();
   incomplete.codexAccountActivity.dailyUsageBuckets[0].tokens -= 1;

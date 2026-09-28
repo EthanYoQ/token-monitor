@@ -4880,6 +4880,7 @@ function renderTrends() {
     fixedSnapshot: fixed,
     daily: preview.daily,
     historySummary: preview.summary,
+    codexAccountActivity: state.stats?.codexAccountActivity,
     todayKey: charts.localDayKey()
   });
   const rangeLabel = fixed?.status === 'ready' || state.period === 'allTime'
