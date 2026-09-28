@@ -1,5 +1,7 @@
 'use strict';
 
+const { computeStreaks, dayKeyAddDays, localDayKey } = require('../../history');
+
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const FRESHNESS_MS = 60 * 60 * 1000;
 
@@ -142,4 +144,67 @@ function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceI
   return result;
 }
 
-module.exports = { normalizeAccountActivity, selectAccountActivity, applyAccountActivityToStats, isAccountActivityStale };
+// The account reading has token buckets but no cost, model or task-time data.
+// Replace only Codex tokens on each source-defined date; leave every local-only
+// field untouched. The already-presented All Time total is the headline source
+// of truth, so Dashboard and Home cannot disagree after the same validation.
+function projectAccountActivityToHistory(history, snapshot, presentedStats, options = {}) {
+  const account = presentedStats?.codexAccountActivity;
+  if (!history || !snapshot?.dailyCoverageComplete
+    || !['applied', 'stale'].includes(account?.status)
+    || account.source !== snapshot.source || account.fetchedAt !== snapshot.fetchedAt
+    || account.lifetimeTokens !== snapshot.lifetimeTokens
+    || !Number.isSafeInteger(presentedStats?.periods?.allTime?.totalTokens)) return history;
+
+  const buckets = new Map(snapshot.dailyUsageBuckets.map(({ date, tokens }) => [date, tokens]));
+  const months = new Map();
+  for (const [date, tokens] of buckets) months.set(date.slice(0, 7), (months.get(date.slice(0, 7)) || 0) + tokens);
+  const replaceCodex = (row, accountTokens) => {
+    const original = Number(row?.tokens || 0);
+    const localCodex = Number(row?.perClient?.codex?.tokens || 0);
+    if (!row?.perClient || !Number.isSafeInteger(original) || !Number.isSafeInteger(localCodex)
+      || localCodex < 0 || original < localCodex) return null;
+    return {
+      ...row,
+      tokens: original - localCodex + accountTokens,
+      perClient: { ...row.perClient, codex: { ...row.perClient.codex, tokens: accountTokens } }
+    };
+  };
+  const projectRows = (rows, field, accountByKey) => {
+    const result = [];
+    const remaining = new Map(accountByKey);
+    for (const row of rows || []) {
+      const key = String(row?.[field] || '');
+      const projected = replaceCodex(row, remaining.get(key) || 0);
+      if (!projected) return null;
+      result.push(projected);
+      remaining.delete(key);
+    }
+    for (const [key, tokens] of remaining) {
+      result.push({ [field]: key, tokens, cost: 0, activeTimeMs: 0, perClient: { codex: { tokens, cost: 0 } }, perModel: {} });
+    }
+    return result.sort((a, b) => a[field].localeCompare(b[field]));
+  };
+  const fullDaily = projectRows(history.daily, 'date', buckets);
+  const monthly = projectRows(history.monthly, 'month', months);
+  if (!fullDaily || !monthly) return history;
+  const today = String(options.todayKey || localDayKey()).slice(0, 10);
+  const streaks = computeStreaks(fullDaily, today);
+  const currentStreak = streaks.currentStreak || computeStreaks(fullDaily, dayKeyAddDays(today, -1)).currentStreak;
+  return {
+    ...history,
+    daily: fullDaily.filter((row) => row.date >= dayKeyAddDays(today, -369) && row.date <= today),
+    monthly,
+    summary: {
+      ...history.summary,
+      totalTokens: presentedStats.periods.allTime.totalTokens,
+      activeDays: fullDaily.filter((row) => row.tokens > 0).length,
+      currentStreak: account.status === 'applied' ? currentStreak : history.summary?.currentStreak || 0,
+      longestStreak: Math.max(history.summary?.longestStreak || 0, streaks.longestStreak),
+      peakDayTokens: fullDaily.reduce((peak, row) => Math.max(peak, row.tokens), 0)
+    },
+    codexAccountActivity: { status: account.status, fetchedAt: account.fetchedAt, dateBoundary: 'source-defined' }
+  };
+}
+
+module.exports = { normalizeAccountActivity, selectAccountActivity, applyAccountActivityToStats, projectAccountActivityToHistory, isAccountActivityStale };

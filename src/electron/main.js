@@ -26,7 +26,7 @@ const motionPreferenceApi = require('./motionPreference');
 const { clearBackgroundImage, getBackgroundImage, importBackgroundImage } = require('./backgroundImage');
 const { createClientSourceIpcHandlers } = require('./clientSourceIpc');
 const { createCodexAccountActivity } = require('./codexAccountActivity');
-const { applyAccountActivityToStats, isAccountActivityStale } = require('../shared/providers/codex/accountActivity');
+const { applyAccountActivityToStats, projectAccountActivityToHistory, isAccountActivityStale } = require('../shared/providers/codex/accountActivity');
 const { createClaudeWebFetch } = require('./providers/claude/webFetch');
 const { runAntigravityOAuthLogin } = require('./providers/antigravity/oauthLogin');
 const antigravityOAuth = require('../shared/providers/antigravity/oauth');
@@ -2855,6 +2855,9 @@ let latestStats = null;
 const codexAccountActivity = createCodexAccountActivity({
   onChange: () => {
     if (latestStats) sendPush({ event: 'stats', data: { type: 'stats', reason: 'presentation', stats: latestStats, at: new Date().toISOString() } }, { skipExport: true });
+    if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+      try { dashboardWindow.webContents.send('dashboard:historyChanged'); } catch (_) {}
+    }
   },
   onError: (error) => console.warn(`[codex-account-activity] ${error.message}`),
   onConflict: () => console.warn('[codex-account-activity] newer account total is lower; retaining the verified snapshot')
@@ -6628,8 +6631,13 @@ async function getDashboardHistory(options = {}) {
     : { history: await getCompleteHistory(), deviceHistories: undefined };
   const history = resolved.history;
   const source = completeHistorySource(historyResolverOptions());
+  const accountSnapshot = settings?.historyEnabled !== false && settings?.codexAccountActivityEnabled === true && latestStats
+    ? codexAccountActivity.snapshot() : null;
+  const accountHistory = accountSnapshot
+    ? projectAccountActivityToHistory(history, accountSnapshot, electronPresentationStats(latestStats))
+    : history;
   return projectModelAliasHistory({
-    ...history,
+    ...accountHistory,
     ...(includeDevices ? { deviceHistories: resolved.deviceHistories } : {}),
     fixedPeriods: fixedPeriodHistoryMeta({
       source
@@ -7153,6 +7161,9 @@ app.whenReady().then(() => {
     if (settings.codexAccountActivityEnabled !== previousRuntimeSettings.codexAccountActivityEnabled) {
       refreshLimitStatsPresentation();
       if (settings.codexAccountActivityEnabled) void codexAccountActivity.refresh();
+      if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+        try { dashboardWindow.webContents.send('dashboard:historyChanged'); } catch (_) {}
+      }
     }
     if (JSON.stringify(settings.modelAliases) !== JSON.stringify(previousSettingsState.modelAliases)
       || settings.modelAliasGrouping !== previousSettingsState.modelAliasGrouping) {

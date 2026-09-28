@@ -10,7 +10,8 @@ const { createCodexAccountActivity } = require('../../src/electron/codexAccountA
 const {
   normalizeAccountActivity,
   selectAccountActivity,
-  applyAccountActivityToStats: applyAccountActivityToStatsRaw
+  applyAccountActivityToStats: applyAccountActivityToStatsRaw,
+  projectAccountActivityToHistory
 } = require('../../src/shared/providers/codex/accountActivity');
 
 function applyAccountActivityToStats(stats, snapshot, since, deviceId = '', singleAccount = true, nowMs = Date.parse('2026-09-27T04:10:00Z')) {
@@ -51,6 +52,50 @@ test('account total replaces local Codex without summing the two sources or chan
   assert.equal(original.periods.allTime.totalTokens, 31_930);
   assert.equal(shown.codexAccountActivity.status, 'applied');
   assert.equal(shown.codexAccountActivity.unallocatedTokens, undefined);
+});
+
+test('dashboard history uses verified account days once and keeps local-only evidence local', () => {
+  const raw = activity(300, '2026-09-26');
+  raw.codexAccountActivity.fetchedAt = '2026-09-28T00:00:00Z';
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-26', tokens: 100 },
+    { startDate: '2026-09-27', tokens: 100 },
+    { startDate: '2026-09-28', tokens: 100 }
+  ];
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const history = {
+    daily: [
+      { date: '2026-09-26', tokens: 50, cost: 2, activeTimeMs: 60_000, perClient: { codex: { tokens: 40, cost: 1 }, claude: { tokens: 10, cost: 1 } }, perModel: { local: { tokens: 50 } } },
+      { date: '2026-09-28', tokens: 25, cost: 3, activeTimeMs: 120_000, perClient: { codex: { tokens: 20, cost: 2 }, claude: { tokens: 5, cost: 1 } }, perModel: { local: { tokens: 25 } } }
+    ],
+    monthly: [{ month: '2026-09', tokens: 75, cost: 5, perClient: { codex: { tokens: 60, cost: 3 }, claude: { tokens: 15, cost: 2 } } }],
+    summary: { totalTokens: 75, totalCost: 5, activeDays: 2, currentStreak: 1, peakDayTokens: 50, activeTimeMs: 180_000, favoriteModel: 'local', messages: 4 }
+  };
+  const presented = { periods: { allTime: { totalTokens: 315 } }, codexAccountActivity: { status: 'applied', source: 'codex-app-server', fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens } };
+  const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
+  assert.equal(projected.summary.totalTokens, 315);
+  assert.equal(projected.summary.activeDays, 3);
+  assert.equal(projected.summary.currentStreak, 3);
+  assert.equal(projected.summary.longestStreak, 3);
+  assert.equal(projected.summary.peakDayTokens, 110);
+  assert.equal(projected.summary.activeTimeMs, 180_000);
+  assert.equal(projected.summary.totalCost, 5);
+  assert.equal(projected.summary.favoriteModel, 'local');
+  assert.deepEqual(projected.daily.map((day) => [day.date, day.tokens]), [['2026-09-26', 110], ['2026-09-27', 100], ['2026-09-28', 105]]);
+  assert.equal(projected.daily[0].perClient.codex.tokens, 100);
+  assert.equal(projected.daily[0].perModel.local.tokens, 50);
+  assert.equal(projected.monthly[0].tokens, 315);
+  assert.equal(projected.monthly[0].perClient.codex.tokens, 300);
+  assert.equal(history.daily[0].tokens, 50);
+  assert.equal(projected.codexAccountActivity.status, 'applied');
+});
+
+test('dashboard account history leaves unverified scope and ambiguous local days untouched', () => {
+  const snapshot = normalizeAccountActivity(activity(100, '2026-09-28'), 'account-a');
+  const history = { daily: [{ date: '2026-09-28', tokens: 20 }], monthly: [], summary: { totalTokens: 20 } };
+  const presented = { periods: { allTime: { totalTokens: 100 } }, codexAccountActivity: { status: 'applied', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens } };
+  assert.equal(projectAccountActivityToHistory(history, snapshot, { ...presented, codexAccountActivity: { status: 'scope-unverified' } }), history);
+  assert.equal(projectAccountActivityToHistory(history, snapshot, presented), history);
 });
 
 test('account activity exposes a streak through yesterday without changing local history', () => {
