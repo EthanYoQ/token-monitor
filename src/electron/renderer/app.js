@@ -403,6 +403,8 @@ Object.assign(els, {
   collectionCadenceInput: document.getElementById('collectionCadenceInput'),
   collectionCadenceNote: document.getElementById('collectionCadenceNote'),
   sessionUsageArchiveInput: document.getElementById('sessionUsageArchiveInput'),
+  codexAccountActivityInput: document.getElementById('codexAccountActivityInput'),
+  codexAccountActivityNote: document.getElementById('codexAccountActivityNote'),
   sessionUsageArchiveStatus: document.getElementById('sessionUsageArchiveStatus'),
   reduceMotionInputs: Array.from(document.querySelectorAll('input[name="reduceMotionOption"]')),
   windowsBackdropRow: document.getElementById('windowsBackdropRow'),
@@ -4878,6 +4880,7 @@ function renderTrends() {
     fixedSnapshot: fixed,
     daily: preview.daily,
     historySummary: preview.summary,
+    codexAccountActivity: state.stats?.codexAccountActivity,
     todayKey: charts.localDayKey()
   });
   const rangeLabel = fixed?.status === 'ready' || state.period === 'allTime'
@@ -6266,6 +6269,20 @@ function render() {
   if (state.openSession) { els.sessionDetail.classList.remove('hidden'); els.sessionDetailHead.classList.remove('hidden'); } else { els.sessionDetail.classList.add('hidden'); els.sessionDetailHead.classList.add('hidden'); }
   const period = state.stats.periods?.[state.period] || { totalTokens: 0, costUsd: 0, clients: {} };
   const fixedUnavailable = derivedPeriod && state.fixedPeriodSnapshot?.status !== 'ready';
+  if (els.codexAccountActivityNote) {
+    const activity = state.period === 'allTime' ? state.stats.codexAccountActivity : null;
+    const activityMessageKeys = {
+      applied: 'usage.codexAccountActivity.applied',
+      conflict: 'usage.codexAccountActivity.conflict',
+      stale: 'usage.codexAccountActivity.stale',
+      'scope-unverified': 'usage.codexAccountActivity.scopeUnverified',
+      'range-unverified': 'usage.codexAccountActivity.rangeUnverified'
+    };
+    els.codexAccountActivityNote.classList.toggle('hidden', !activity);
+    els.codexAccountActivityNote.textContent = activity
+      ? `${t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified'])} ${activity.fetchedAt ? new Date(activity.fetchedAt).toLocaleString(currentLocale()) : ''}`.trim()
+      : '';
+  }
   const detailUnavailable = derivedPeriod
     && !fixedPeriodRangesApi.supportsBreakdown(state.period, state.breakdown, {
       deviceHistoriesAvailable: Array.isArray(state.fixedPeriodHistory?.deviceHistories)
@@ -7998,6 +8015,7 @@ function syncSettingsForm() {
   }
   if (els.wslScanInput) els.wslScanInput.checked = state.settings.wslScanEnabled !== false;
   if (els.sessionUsageArchiveInput) els.sessionUsageArchiveInput.checked = state.settings.sessionUsageArchiveEnabled !== false;
+  if (els.codexAccountActivityInput) els.codexAccountActivityInput.checked = state.settings.codexAccountActivityEnabled === true;
   renderAutomaticAppUpdateControl();
   allTimeSessions.ensure();
   renderSessionUsageArchiveStatus();
@@ -11374,6 +11392,9 @@ els.collectionCadenceInput?.addEventListener('change', async () => {
 els.sessionUsageArchiveInput?.addEventListener('change', async () => {
   await saveSettings({ sessionUsageArchiveEnabled: els.sessionUsageArchiveInput.checked });
 });
+els.codexAccountActivityInput?.addEventListener('change', async () => {
+  await saveSettings({ codexAccountActivityEnabled: els.codexAccountActivityInput.checked });
+});
 els.clearSessionUsageArchiveButton?.addEventListener('click', async () => {
   if (!window.confirm(t('settings.collection.sessionArchiveConfirm'))) return;
   els.clearSessionUsageArchiveButton.disabled = true;
@@ -11613,6 +11634,12 @@ const edgeDockComposer = els.edgeDockComposer && window.TokenMonitorEdgeDockComp
     providerLabel: (id) => window.TokenMonitorLimitProviders.LIMIT_PROVIDER_LABELS[id] || id,
     providerColor: (id) => limitProviderColor(id),
     hasProviderMark: (id) => limitMarksWithIcon.has(id),
+    // Offer every enabled provider in the user's limits order, including those
+    // without quota data. Keep the ordering rule here rather than in the composer.
+    enabledLimitProviders: () => limitProviderOrderApi
+      .orderedLimitProviders(LIMIT_PROVIDERS, state.settings?.limitProviderOrder)
+      .filter(({ id }) => enabledLimitProviderSet().has(id))
+      .map(({ id }) => id),
     maskEmail: (email) => (state.settings?.maskLimitAccountEmails === true
       ? accountIdentityApi.maskEmailAddress(email)
       : String(email || '')),

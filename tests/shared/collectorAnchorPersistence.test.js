@@ -125,6 +125,27 @@ test('configFingerprint invalidates the anchor when a custom scan path changes',
   assert.notEqual(configFingerprint('claude', '2024-01-01', true, '', '', { claude: [other] }), withPath);
 });
 
+test('CC-Switch anchor fingerprint includes the effective database path', () => {
+  const { DB_PATH } = require('../../src/shared/providers/claude/ccSwitch');
+  const { collectorAnchorTrust } = require('../../src/shared/collector');
+  const args = ['claude', '2024-01-01', true, '', '', null, true];
+  const original = path.join(os.tmpdir(), 'cc-switch-original.db');
+  const moved = path.join(os.tmpdir(), 'cc-switch-moved.db');
+  const fingerprint = configFingerprint(...args, original);
+  assert.ok(configFingerprint(...args).endsWith(`|ccswitch:claude:${path.resolve(DB_PATH)}`));
+  assert.notEqual(fingerprint, configFingerprint(...args, moved));
+
+  const now = new Date();
+  const anchor = {
+    dateKey: localTodayKey(now), today: {}, month: {}, allTime: {},
+    configFingerprint: fingerprint,
+    fullScanAt: new Date(now.getTime() - 60_000).toISOString()
+  };
+  const options = { clients: 'claude', allTimeSince: '2024-01-01', ccSwitchClaudeEnabled: true, now };
+  assert.ok(collectorAnchorTrust(anchor, { ...options, ccSwitchDbPath: original }));
+  assert.equal(collectorAnchorTrust(anchor, { ...options, ccSwitchDbPath: moved }), null);
+});
+
 test('anchored tick with valid anchor runs todayOnly scan and derives month/allTime', async () => {
   const dateKey = localTodayKey();
 
@@ -256,6 +277,7 @@ test('full anchors persist local-only Reasonix native views alongside aggregate 
 
     await waitForCondition(() => updates.length === 1);
     const saved = JSON.parse(fs.readFileSync(path.join(tmpShared, 'collector-anchor.json'), 'utf8'));
+    assert.equal(saved.cursorAutoModelVersion, 1);
     assert.deepEqual(saved.nativeSessions, nativeView.sessions);
     assert.deepEqual(saved.nativeProjects, nativeView.projects);
   } finally {
@@ -675,4 +697,17 @@ test('anchor trust separates "cannot be reused" from "cannot be dated"', () => {
   assert.equal(collectorAnchorTrust(anchor({ fullScanAt: 'nope' }), options).capturedAtMs, null);
   const future = new Date(now.getTime() + 60_000).toISOString();
   assert.equal(collectorAnchorTrust(anchor({ fullScanAt: future }), options).capturedAtMs, null);
+});
+
+test('Cursor anchors from before the Auto model rename require a full scan', () => {
+  const { collectorAnchorTrust, configFingerprint } = freshCollector();
+  const now = new Date(2026, 7, 8, 10, 0, 0);
+  const options = { clients: 'cursor', allTimeSince: '2024-01-01', now };
+  const anchor = {
+    dateKey: '2026-08-08', today: {}, month: {}, allTime: {},
+    configFingerprint: configFingerprint('cursor', '2024-01-01'),
+    fullScanAt: new Date(now.getTime() - 60_000).toISOString()
+  };
+  assert.equal(collectorAnchorTrust(anchor, options), null);
+  assert.equal(collectorAnchorTrust({ ...anchor, cursorAutoModelVersion: 1 }, options).capturedAtMs, now.getTime() - 60_000);
 });
