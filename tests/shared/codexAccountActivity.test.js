@@ -98,6 +98,26 @@ test('dashboard account history leaves unverified scope and ambiguous local days
   assert.equal(projectAccountActivityToHistory(history, snapshot, presented), history);
 });
 
+test('stale account history preserves the locally verified streaks', () => {
+  const raw = activity(100, '2026-09-28');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-27', tokens: 50 },
+    { startDate: '2026-09-28', tokens: 50 }
+  ];
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const history = {
+    daily: [{ date: '2026-09-28', tokens: 20, perClient: { codex: { tokens: 20 } } }],
+    monthly: [{ month: '2026-09', tokens: 20, perClient: { codex: { tokens: 20 } } }],
+    summary: { currentStreak: 1, longestStreak: 1 }
+  };
+  const presented = { periods: { allTime: { totalTokens: 100 } }, codexAccountActivity: {
+    status: 'stale', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens
+  } };
+  const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
+  assert.equal(projected.summary.currentStreak, 1);
+  assert.equal(projected.summary.longestStreak, 1);
+});
+
 test('account activity exposes a streak through yesterday without changing local history', () => {
   const raw = activity(67_570, '2026-09-25');
   raw.codexAccountActivity.fetchedAt = '2026-09-28T00:00:00Z';

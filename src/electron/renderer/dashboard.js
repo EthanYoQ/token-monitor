@@ -419,7 +419,7 @@ function renderBreakdown() {
     const rows = Object.entries(map).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 5);
     if (rows.length === 0) return '';
     const maxVal = Math.max(...rows.map(x => x[1]));
-    const denominator = localOnly ? Object.values(map).reduce((sum, value) => sum + value, 0) : grandTotal;
+    const denominator = accountBacked && localOnly ? Object.values(map).reduce((sum, value) => sum + value, 0) : grandTotal;
     const html = rows.map(([key, val]) => {
       const pctGrand = denominator > 0 ? (val / denominator * 100).toFixed(1) : '0.0';
       const pctMax = maxVal > 0 ? (val / maxVal * 100).toFixed(1) : '0.0';

@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 const { projectAccountActivityToHistory, normalizeAccountActivity } = require('../../src/shared/providers/codex/accountActivity');
+const { localDayKey } = require('../../src/shared/history');
 
 const rootDir = path.join(__dirname, '..', '..');
 const read = (...p) => fs.readFileSync(path.join(rootDir, ...p), 'utf8');
@@ -76,11 +77,13 @@ test('dashboard history uses the same validated account projection as Home', asy
   const main = read('src', 'electron', 'main.js');
   const body = /async function getDashboardHistory\(options = \{\}\)\s*\{[\s\S]*?\n\}/.exec(main)?.[0];
   assert.ok(body);
+  const today = localDayKey();
+  const month = today.slice(0, 7);
   const snapshot = normalizeAccountActivity({ codexAccountActivity: {
     status: 'available', source: 'codex-app-server', fetchedAt: '2026-09-28T04:00:00Z',
-    lifetimeTokens: 100, dailyUsageBuckets: [{ startDate: '2026-09-28', tokens: 100 }]
+    lifetimeTokens: 100, dailyUsageBuckets: [{ startDate: today, tokens: 100 }]
   } }, 'account-a');
-  const local = { daily: [{ date: '2026-09-28', tokens: 30, perClient: { codex: { tokens: 20 }, claude: { tokens: 10 } } }], monthly: [{ month: '2026-09', tokens: 30, perClient: { codex: { tokens: 20 }, claude: { tokens: 10 } } }], summary: { totalTokens: 30 } };
+  const local = { daily: [{ date: today, tokens: 30, perClient: { codex: { tokens: 20 }, claude: { tokens: 10 } } }], monthly: [{ month, tokens: 30, perClient: { codex: { tokens: 20 }, claude: { tokens: 10 } } }], summary: { totalTokens: 30 } };
   const settings = { codexAccountActivityEnabled: true };
   const presented = { periods: { allTime: { totalTokens: 110 } }, codexAccountActivity: { status: 'applied', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens } };
   const getHistory = vm.runInNewContext(`(${body})`, {
@@ -92,6 +95,22 @@ test('dashboard history uses the same validated account projection as Home', asy
   const history = await getHistory();
   assert.equal(history.summary.totalTokens, 110);
   assert.equal(history.daily[0].tokens, 110);
+});
+
+test('dashboard model percentages use the original grand total without account backing', () => {
+  const breakdown = { innerHTML: '' };
+  const state = { history: { daily: [{ tokens: 100, perClient: { codex: { tokens: 100 } }, perModel: { named: { tokens: 40 } } }] }, motion: 'none' };
+  const renderBreakdown = dashboardFunction('renderBreakdown', 'let statCardMeasureCanvas', {
+    document: { getElementById: () => breakdown }, state,
+    captureGeometry: () => new Map(), displayColor: (color) => color,
+    charts: { modelColor: () => '#fff', clientColors: { codex: '#fff' } },
+    formatCompact: String, t: (key) => key, applySwatchColors() {}
+  });
+  renderBreakdown();
+  assert.match(breakdown.innerHTML, /named[\s\S]*?40\.0%/);
+  state.history.codexAccountActivity = { status: 'applied' };
+  renderBreakdown();
+  assert.match(breakdown.innerHTML, /named[\s\S]*?100\.0%/);
 });
 
 test('account-backed overview labels local-only cards and both heatmap scopes', () => {

@@ -200,7 +200,9 @@ function projectAccountActivityToHistory(history, snapshot, presentedStats, opti
       totalTokens: presentedStats.periods.allTime.totalTokens,
       activeDays: fullDaily.filter((row) => row.tokens > 0).length,
       currentStreak: account.status === 'applied' ? currentStreak : history.summary?.currentStreak || 0,
-      longestStreak: Math.max(history.summary?.longestStreak || 0, streaks.longestStreak),
+      longestStreak: account.status === 'applied'
+        ? Math.max(history.summary?.longestStreak || 0, streaks.longestStreak)
+        : history.summary?.longestStreak || 0,
       peakDayTokens: fullDaily.reduce((peak, row) => Math.max(peak, row.tokens), 0)
     },
     codexAccountActivity: { status: account.status, fetchedAt: account.fetchedAt, dateBoundary: 'source-defined' }
