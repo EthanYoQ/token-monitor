@@ -1072,6 +1072,7 @@ async function collectHistoryOnce(options) {
         liveDays: options.dailyHistoryLiveDays,
         todayKey,
         capDays,
+        unavailableClients: options.unavailableClients,
         writeEnabled: options.dailyHistoryArchiveWriteEnabled
       });
       const retained = normalizeHistory(parseGraphResult(retainedGraph), { capDays, todayKey });
@@ -1554,13 +1555,13 @@ async function collectUsageOnce(options) {
     options.historyEnabled !== false
     && options.dailyHistoryArchiveEnabled
     && options.deferLiveHistoryCapture !== true
-    && !openCodeReviewReadFailed
   ) {
     try {
       const retainedLive = retainLiveDailyHistory(today, {
         ...(options.dailyHistoryArchiveOptions || {}),
         liveDays: dailyHistoryLiveDays,
         todayKey: localTodayKey(collectedAt),
+        unavailableClients: openCodeReviewReadFailed ? ['open-code-review'] : [],
         writeEnabled: options.dailyHistoryArchiveWriteEnabled
       });
       dailyHistoryLiveDays = retainedLive.liveDays || {};
@@ -1664,7 +1665,7 @@ async function collectUsageOnce(options) {
   }
   if (options.historyEnabled === false) {
     summary.history = null;
-  } else if (options.includeHistory && (!openCodeReviewReadFailed || openCodeReviewRows)) {
+  } else if (options.includeHistory) {
     // The history graph needs the full Qoder CN row set: anchored (watch/interval)
     // ticks collect Qoder CN rows only since local midnight for the period delta,
     // so reusing qoderCnRows here would truncate the history panel to today and
@@ -1716,7 +1717,8 @@ async function collectUsageOnce(options) {
       runGraph: runGraphFn,
       signal: options.signal,
       dailyHistoryArchiveEnabled: options.dailyHistoryArchiveEnabled,
-      dailyHistoryArchiveWriteEnabled: openCodeReviewReadFailed ? false : options.dailyHistoryArchiveWriteEnabled,
+      dailyHistoryArchiveWriteEnabled: options.dailyHistoryArchiveWriteEnabled,
+      unavailableClients: openCodeReviewReadFailed ? ['open-code-review'] : [],
       dailyHistoryArchiveOptions: options.dailyHistoryArchiveOptions,
       dailyHistoryLiveDays,
       onHistoryStatus: openCodeReviewReadFailed ? null : options.onHistoryStatus,
@@ -3008,7 +3010,7 @@ function startCollector(options) {
         };
         wslAnchor = captured.wslBundle;
         wslStatusAnchor = captured.wslStatus || null;
-        if (!qoderCnReadState.periodFailed && !captured.openCodeReviewReadFailed) lastFullScanAt = Date.now();
+        if (!qoderCnReadState.periodFailed) lastFullScanAt = Date.now();
         if (options.anchorPersistenceEnabled !== false && !captured.openCodeReviewReadFailed) {
           try {
             fs.mkdirSync(path.dirname(anchorPath), { recursive: true });
@@ -3055,7 +3057,7 @@ function startCollector(options) {
       const visibleSummary = transformedSummary && typeof transformedSummary === 'object'
         ? transformedSummary
         : summary;
-      if (historyEnabled !== false && options.dailyHistoryArchiveEnabled && !captured?.openCodeReviewReadFailed) {
+      if (historyEnabled !== false && options.dailyHistoryArchiveEnabled) {
         try {
           const visibleAt = visibleSummary.updatedAt || summary.updatedAt;
           const visibleDate = visibleAt ? new Date(visibleAt) : new Date();
@@ -3066,6 +3068,7 @@ function startCollector(options) {
             ...(options.dailyHistoryArchiveOptions || {}),
             liveDays: liveDailyHistoryDays,
             todayKey: visibleDateKey,
+            unavailableClients: captured?.openCodeReviewReadFailed ? ['open-code-review'] : [],
             // Watch ticks update the in-memory maximum on every refresh, but
             // only full/history ticks write it. This avoids a disk write for
             // every few-second watch event without dropping the value before
