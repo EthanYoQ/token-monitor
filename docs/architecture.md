@@ -90,6 +90,8 @@ The widget runs the collector, the usage transform (`src/shared/usage/usageTrans
 
 `settings.hubMode` selects the data path. `local` runs the local collector over IPC. `client` stops it, opens the Hub SSE stream and runs a sync collector for this device. `host` adds an embedded Hub (`startEmbeddedHub()`). A widget sync collector skips posting while the PID in `data/agent.pid` is alive — the only coordination between widget and headless agent.
 
+On Windows, `mainWindowAutoHideEnabled` lets the main window dock to an exposed work-area edge. `mainWindowAutoHideSide` and `windowBounds` persist the side and expanded bounds; the 8 px peek strip is a runtime position and must never replace those saved bounds. The controller releases docking before maximization or a mode that uses another window shape, and restores the expanded bounds when the display layout changes.
+
 Every publish recomposes and ships the whole stats tree, so its cost is paid per event (`src/electron/statsPublisher.js`):
 
 - **Client mode batches publications.** Local ticks and Hub events, including the Hub's echo of this device's own upload, collapse into one publish per 1 s window that composes whatever is newest when it closes. A Hub reason outranks a local one in the batch, because the renderer reads `local` as saying nothing about the connection. `sendStatus()` flushes the batch first: a Hub event delivered after a disconnect status would mark the stream connected again.

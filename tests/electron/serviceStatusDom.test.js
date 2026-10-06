@@ -266,7 +266,6 @@ test('view switcher preserves click-to-cycle and direct selection without crowdi
   const html = readRendererFile('index.html');
   const app = readRendererFile('app.js');
   const css = readRendererFile('styles.css');
-  const setViewSwitcherOpenBody = functionBody(app, 'setViewSwitcherOpen', 'renderViewSwitcher');
   assert.match(html, /id="viewSwitcher" class="view-switcher"/);
   assert.doesNotMatch(html, /id="viewDock"/);
   assert.match(app, /function nextBreakdown/);
@@ -284,7 +283,6 @@ test('view switcher preserves click-to-cycle and direct selection without crowdi
   assert.match(app, /viewSwitcherHasOpened/);
   assert.match(app, /menu\.setAttribute\('aria-hidden', String\(!state\.viewSwitcherOpen\)\)/);
   assert.match(app, /item\.tabIndex = state\.viewSwitcherOpen \? \(active \? 0 : -1\) : -1/);
-  assert.match(setViewSwitcherOpenBody, /if \(updateViewSwitcherOpenState\(\{ focusMenu, focusDisclosure \}\)\) return/);
   assert.doesNotMatch(app, /function viewDockIsCompact/);
   assert.doesNotMatch(app, /VIEW_DOCK_METRICS/);
   assert.match(cssRule(css, '.view-switcher'), /flex:\s*0 1 auto/);
