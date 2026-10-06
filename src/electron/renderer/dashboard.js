@@ -497,11 +497,20 @@ function balanceStatCards() {
 }
 
 function renderActivity() {
-  const accountBacked = ['applied', 'stale'].includes(state.history?.codexAccountActivity?.status);
-  const staleNote = state.history?.codexAccountActivity?.status === 'stale' ? ` ${t('dashboard.scope.stale')}` : '';
+  const account = state.history?.codexAccountActivity;
+  const accountBacked = ['applied', 'stale'].includes(account?.status);
   const heatmapScopeKey = state.heatmapMetric === 'cost' ? 'dashboard.scope.localHeatmap' : 'dashboard.scope.accountHeatmap';
   els.scopeNote.classList.toggle('hidden', !accountBacked);
-  els.scopeNote.textContent = accountBacked ? `${t('dashboard.scope.accountOverview')}${staleNote}` : '';
+  const scopeNotes = [];
+  if (accountBacked) {
+    scopeNotes.push(t('dashboard.scope.accountOverview'));
+    if (account.coverageThrough) scopeNotes.push(t('usage.codexAccountActivity.coverage', { date: account.coverageThrough }));
+    if (account.fetchedAt) scopeNotes.push(t('usage.codexAccountActivity.lastRead', {
+      date: new Date(account.fetchedAt).toLocaleString(state.locale)
+    }));
+    if (account.status === 'stale') scopeNotes.push(t('dashboard.scope.stale'));
+  }
+  els.scopeNote.textContent = scopeNotes.join(' ');
   els.heatmapScope.textContent = accountBacked ? t(heatmapScopeKey) : '';
   const daily = charts.computeHeatmapIntensities(state.history?.daily || []);
   const end = todayKey();

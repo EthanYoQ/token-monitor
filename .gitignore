@@ -10,6 +10,7 @@ docs/superpowers/
 .superpowers/
 .codegraph/
 tmp/
+.runtime/
 .env
 .env.*
 !.env.example

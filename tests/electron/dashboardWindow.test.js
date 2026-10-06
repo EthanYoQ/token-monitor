@@ -130,7 +130,8 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
     },
     todayKey: () => '2026-09-28', monthLabel: () => '', prefersReducedMotion: () => true,
     animateHeatmapEntry() {}, balanceStatCards() {}, renderBreakdown() {},
-    t: (key) => key, formatDurationCompact: () => '', formatCompact: () => '', formatCostCompact: () => ''
+    t: (key, params) => params?.date ? `${key}: ${params.date}` : key,
+    formatDurationCompact: () => '', formatCompact: () => '', formatCostCompact: () => ''
   });
   renderActivity();
   assert.match(cards.innerHTML, /trends\.activeTime.*dashboard\.scope\.local/);
@@ -139,6 +140,16 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
   state.heatmapMetric = 'cost';
   renderActivity();
   assert.equal(heatmapScope.textContent, 'dashboard.scope.localHeatmap');
+  state.history.codexAccountActivity = {
+    status: 'stale', coverageThrough: '2026-10-05', fetchedAt: '2026-10-06T03:32:53.294Z'
+  };
+  renderActivity();
+  assert.match(scopeNote.textContent, /usage\.codexAccountActivity\.coverage: 2026-10-05/);
+  assert.ok(scopeNote.textContent.includes(`usage.codexAccountActivity.lastRead: ${new Date('2026-10-06T03:32:53.294Z').toLocaleString(state.locale)}`));
+  assert.match(scopeNote.textContent, /dashboard\.scope\.stale/);
+  delete state.history.codexAccountActivity;
+  renderActivity();
+  assert.equal(scopeNote.textContent, '');
 });
 
 test('fixed ranges request existing per-device History without changing ingest', () => {

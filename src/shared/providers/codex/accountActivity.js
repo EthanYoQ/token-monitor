@@ -54,6 +54,13 @@ function selectAccountActivity(current, incoming, { correctionConfirmed = false 
   return { snapshot: incoming, conflict: false };
 }
 
+function accountBuckets(snapshot) {
+  const days = new Map(snapshot.dailyUsageBuckets.map(({ date, tokens }) => [date, tokens]));
+  const months = new Map();
+  for (const [date, tokens] of days) months.set(date.slice(0, 7), (months.get(date.slice(0, 7)) || 0) + tokens);
+  return { days, months, coverageThrough: snapshot.dailyUsageBuckets.at(-1)?.date };
+}
+
 function accountCurrentStreak(buckets, nowMs) {
   const active = (buckets || []).filter((bucket) => bucket.tokens > 0);
   if (active.length === 0) return 0;
@@ -70,27 +77,11 @@ function accountCurrentStreak(buckets, nowMs) {
   return streak;
 }
 
-function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceId = '', singleAccount = true, nowMs = Date.now()) {
-  if (!stats || !snapshot) return stats;
-  if (!singleAccount) return { ...stats, codexAccountActivity: { status: 'scope-unverified', fetchedAt: snapshot.fetchedAt } };
-  if (stats.codexAccountActivity?.source === snapshot.source && stats.codexAccountActivity?.fetchedAt === snapshot.fetchedAt) return stats;
-  const earliest = snapshot.dailyUsageBuckets?.[0]?.date;
-  const covered = snapshot.dailyCoverageComplete === true && earliest && allTimeSince <= earliest;
-  if (!covered) return { ...stats, codexAccountActivity: { status: 'range-unverified', fetchedAt: snapshot.fetchedAt } };
-  if (Array.isArray(stats.devices) && stats.devices.some((device) =>
-    device.deviceId !== localDeviceId && Number(device.periods?.allTime?.clients?.codex || 0) > 0)) {
-    return { ...stats, codexAccountActivity: { status: 'scope-unverified', fetchedAt: snapshot.fetchedAt } };
-  }
-  const original = stats.periods?.allTime;
-  if (!original) return stats;
+function replaceCodexPeriod(original, officialTokens) {
   const localTokens = Number(original.clients?.codex || 0);
-  const officialTokens = snapshot.lifetimeTokens;
-  const stale = isAccountActivityStale(snapshot, nowMs);
-  if (!Number.isSafeInteger(localTokens) || localTokens < 0
-    || !Number.isSafeInteger(original.totalTokens)
-    || !Number.isSafeInteger(original.totalTokens - localTokens + officialTokens)) {
-    return { ...stats, codexAccountActivity: { status: 'conflict', fetchedAt: snapshot.fetchedAt } };
-  }
+  if (tokenCount(localTokens) === null || tokenCount(original.totalTokens) === null
+    || original.totalTokens < localTokens || tokenCount(officialTokens) === null
+    || tokenCount(original.totalTokens - localTokens + officialTokens) === null) return null;
   const period = {
     ...original,
     capabilities: { ...original.capabilities, tokenComponents: false },
@@ -100,48 +91,75 @@ function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceI
     clientOutputs: { ...original.clientOutputs },
     clientUnclassifiedTokens: { ...original.clientUnclassifiedTokens, codex: officialTokens },
     totalTokens: original.totalTokens - localTokens + officialTokens,
-    cacheReadTokens: Math.max(0, original.cacheReadTokens - (original.clientCacheReads?.codex || 0)),
-    cacheWriteTokens: Math.max(0, original.cacheWriteTokens - (original.clientCacheWrites?.codex || 0)),
-    outputTokens: Math.max(0, original.outputTokens - (original.clientOutputs?.codex || 0)),
-    unclassifiedTokens: Math.max(0, original.unclassifiedTokens - (original.clientUnclassifiedTokens?.codex || 0)) + officialTokens
+    cacheReadTokens: Math.max(0, (original.cacheReadTokens || 0) - (original.clientCacheReads?.codex || 0)),
+    cacheWriteTokens: Math.max(0, (original.cacheWriteTokens || 0) - (original.clientCacheWrites?.codex || 0)),
+    outputTokens: Math.max(0, (original.outputTokens || 0) - (original.clientOutputs?.codex || 0)),
+    unclassifiedTokens: Math.max(0, (original.unclassifiedTokens || 0) - (original.clientUnclassifiedTokens?.codex || 0)) + officialTokens
   };
   delete period.clientCacheReads.codex;
   delete period.clientCacheWrites.codex;
   delete period.clientOutputs.codex;
-  if (localTokens > officialTokens) {
-    // A local rollup above the account total cannot be a trustworthy partial
-    // breakdown. Suppress the all-time details instead of inventing a split.
-    for (const field of ['models', 'modelCosts', 'modelCacheReads', 'modelCacheWrites',
-      'modelOutputs', 'modelUnclassifiedTokens', 'projects', 'sessions']) period[field] = {};
-    period.clientModels = {};
-    period.clientModelCosts = {};
-    period.clientCosts = { ...original.clientCosts };
-    period.costUsd = Math.max(0, original.costUsd - (period.clientCosts.codex || 0));
-    delete period.clientCosts.codex;
-    period.capabilities.throughput = false;
-    period.timedTokens = 0;
-    period.timedOutputTokens = 0;
-    period.timedDurationMs = 0;
+  return period;
+}
+
+function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceId = '', singleAccount = true, nowMs = Date.now()) {
+  if (!stats || !snapshot) return stats;
+  if (!singleAccount) return { ...stats, codexAccountActivity: { status: 'scope-unverified', fetchedAt: snapshot.fetchedAt } };
+  if (stats.codexAccountActivity?.source === snapshot.source && stats.codexAccountActivity?.fetchedAt === snapshot.fetchedAt) return stats;
+  const earliest = snapshot.dailyUsageBuckets?.[0]?.date;
+  const covered = snapshot.dailyCoverageComplete === true && earliest && allTimeSince <= earliest;
+  if (!covered) return { ...stats, codexAccountActivity: { status: 'range-unverified', fetchedAt: snapshot.fetchedAt } };
+  if (Array.isArray(stats.devices) && stats.devices.some((device) =>
+    device.deviceId !== localDeviceId && ['today', 'month', 'allTime'].some((name) => Number(device.periods?.[name]?.clients?.codex || 0) > 0))) {
+    return { ...stats, codexAccountActivity: { status: 'scope-unverified', fetchedAt: snapshot.fetchedAt } };
   }
+  if (!stats.periods?.allTime) return stats;
+  const { days, months, coverageThrough } = accountBuckets(snapshot);
+  const today = localDayKey(new Date(nowMs));
+  const month = today.slice(0, 7);
+  const selected = { today: days.get(today), month: months.get(month), allTime: snapshot.lifetimeTokens };
+  const periods = { ...stats.periods };
+  const attribution = {};
+  for (const [name, officialTokens] of Object.entries(selected)) {
+    const original = periods[name];
+    if (!original) continue;
+    const usesAccount = officialTokens !== undefined;
+    if (usesAccount) {
+      const projected = replaceCodexPeriod(original, officialTokens);
+      if (!projected) return { ...stats, codexAccountActivity: { status: 'conflict', fetchedAt: snapshot.fetchedAt } };
+      periods[name] = projected;
+    }
+    attribution[name] = {
+      headlineSource: usesAccount ? 'codex-account' : 'local',
+      dateBoundary: usesAccount ? 'source-defined' : 'device-local',
+      coverageThrough,
+      reportingLag: coverageThrough < today,
+      localDetailTokens: Number(original.clients?.codex || 0),
+      detailSource: 'local',
+      ...(name === 'today' ? { selectedDate: today } : {}),
+      ...(name === 'month' ? { selectedMonth: month } : {})
+    };
+  }
+  const localTokens = attribution.allTime.localDetailTokens;
   let status = 'applied';
-  if (stale) status = 'stale';
-  else if (localTokens > officialTokens) status = 'conflict';
-  const result = {
+  if (isAccountActivityStale(snapshot, nowMs)) status = 'stale';
+  else if (localTokens > snapshot.lifetimeTokens) status = 'conflict';
+  return {
     ...stats,
-    periods: { ...stats.periods, allTime: period },
+    periods,
     codexAccountActivity: {
       status,
       source: snapshot.source,
       fetchedAt: snapshot.fetchedAt,
-      lifetimeTokens: officialTokens,
+      lifetimeTokens: snapshot.lifetimeTokens,
       localDetailTokens: localTokens,
-      detailsSuppressed: localTokens > officialTokens,
+      detailsSuppressed: false,
       dateBoundary: 'source-defined',
+      coverageThrough,
+      periods: attribution,
       ...(status === 'applied' ? { currentStreak: accountCurrentStreak(snapshot.dailyUsageBuckets, nowMs) } : {})
     }
   };
-  if (localTokens > officialTokens) delete result.allTimeSessionsView;
-  return result;
 }
 
 // The account reading has token buckets but no cost, model or task-time data.
@@ -151,19 +169,18 @@ function applyAccountActivityToStats(stats, snapshot, allTimeSince, localDeviceI
 function projectAccountActivityToHistory(history, snapshot, presentedStats, options = {}) {
   const account = presentedStats?.codexAccountActivity;
   if (!history || !snapshot?.dailyCoverageComplete
-    || !['applied', 'stale'].includes(account?.status)
+    || !['applied', 'stale', 'conflict'].includes(account?.status)
     || account.source !== snapshot.source || account.fetchedAt !== snapshot.fetchedAt
     || account.lifetimeTokens !== snapshot.lifetimeTokens
     || !Number.isSafeInteger(presentedStats?.periods?.allTime?.totalTokens)) return history;
 
-  const buckets = new Map(snapshot.dailyUsageBuckets.map(({ date, tokens }) => [date, tokens]));
-  const months = new Map();
-  for (const [date, tokens] of buckets) months.set(date.slice(0, 7), (months.get(date.slice(0, 7)) || 0) + tokens);
+  const { days, months, coverageThrough } = accountBuckets(snapshot);
   const replaceCodex = (row, accountTokens) => {
     const original = Number(row?.tokens || 0);
     const localCodex = Number(row?.perClient?.codex?.tokens || 0);
     if (!row?.perClient || !Number.isSafeInteger(original) || !Number.isSafeInteger(localCodex)
-      || localCodex < 0 || original < localCodex) return null;
+      || localCodex < 0 || original < localCodex
+      || tokenCount(original - localCodex + accountTokens) === null) return null;
     return {
       ...row,
       tokens: original - localCodex + accountTokens,
@@ -175,17 +192,23 @@ function projectAccountActivityToHistory(history, snapshot, presentedStats, opti
     const remaining = new Map(accountByKey);
     for (const row of rows || []) {
       const key = String(row?.[field] || '');
-      const projected = replaceCodex(row, remaining.get(key) || 0);
+      const usesAccount = remaining.has(key);
+      const projected = usesAccount ? replaceCodex(row, remaining.get(key)) : row;
       if (!projected) return null;
-      result.push(projected);
+      result.push({ ...projected, codexAccountActivity: {
+        headlineSource: usesAccount ? 'codex-account' : 'local',
+        dateBoundary: usesAccount ? 'source-defined' : 'device-local',
+        detailSource: 'local'
+      } });
       remaining.delete(key);
     }
     for (const [key, tokens] of remaining) {
-      result.push({ [field]: key, tokens, cost: 0, activeTimeMs: 0, perClient: { codex: { tokens, cost: 0 } }, perModel: {} });
+      result.push({ [field]: key, tokens, cost: 0, activeTimeMs: 0, perClient: { codex: { tokens, cost: 0 } }, perModel: {},
+        codexAccountActivity: { headlineSource: 'codex-account', dateBoundary: 'source-defined', detailSource: 'local' } });
     }
     return result.sort((a, b) => a[field].localeCompare(b[field]));
   };
-  const fullDaily = projectRows(history.daily, 'date', buckets);
+  const fullDaily = projectRows(history.daily, 'date', days);
   const monthly = projectRows(history.monthly, 'month', months);
   if (!fullDaily || !monthly) return history;
   const now = new Date(options.nowMs ?? Date.now());
@@ -207,7 +230,13 @@ function projectAccountActivityToHistory(history, snapshot, presentedStats, opti
         : history.summary?.longestStreak || 0,
       peakDayTokens: fullDaily.reduce((peak, row) => Math.max(peak, row.tokens), 0)
     },
-    codexAccountActivity: { status: account.status, fetchedAt: account.fetchedAt, dateBoundary: 'source-defined' }
+    codexAccountActivity: {
+      status: account.status === 'stale' ? 'stale' : 'applied',
+      fetchedAt: account.fetchedAt,
+      dateBoundary: 'source-defined',
+      coverageThrough,
+      supplementaryLocalDates: fullDaily.filter((row) => row.codexAccountActivity.headlineSource === 'local').map((row) => row.date)
+    }
   };
 }
 

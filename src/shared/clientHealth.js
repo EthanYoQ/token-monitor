@@ -210,6 +210,7 @@ const CLIENT_SOURCE_CHECK_IDS = Object.freeze([
   'mimocode-data',
   'mimocode-orca-data',
   'omp-sessions',
+  'open-code-review-sessions',
   'opencode-data',
   'openclaw-agents',
   'pi-sessions',

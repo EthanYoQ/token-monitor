@@ -5135,7 +5135,25 @@ test('a stats frame stamped with a newer subscription version is read back, once
   // The stamp is only useful if both stats paths consult it: the stream while it
   // is up, and the widget's own read when it is not.
   assert.match(functionBody(main, 'sendPush', 'statsHistoryRevision'), /maybeAdoptSharedSubscriptionRevision\(/);
-  assert.match(main, /const stats = await fetchStats\(options\);[\s\S]{0,240}maybeAdoptSharedSubscriptionRevision\(stats\);/);
+  const statsHandlerSource = main.slice(main.indexOf("ipcMain.handle('stats:get'"), main.indexOf("ipcMain.handle('export:now'"));
+  const stats = { subscriptionsUpdatedAt: 'v2' };
+  const adopted = [];
+  let handler;
+  let accountReads = 0;
+  vm.runInNewContext(statsHandlerSource, {
+    ipcMain: { handle: (name, callback) => { if (name === 'stats:get') handler = callback; } },
+    fetchStats: async () => stats,
+    codexAccountActivity: { refresh: async () => { accountReads += 1; } },
+    maybeAdoptSharedSubscriptionRevision: (value) => adopted.push(value),
+    electronPresentationStats: (value) => value,
+    rendererStats: (value) => value,
+    rendererSnapshots: { stamp: (_raw, value) => value }
+  });
+  assert.equal(await handler({}, {}), stats);
+  assert.equal(accountReads, 0);
+  assert.equal(await handler({}, { forceHistory: true }), stats);
+  assert.equal(accountReads, 1);
+  assert.deepEqual(adopted, [stats, stats]);
   // And there is no periodic subscription read left behind it. One existed while
   // the stamp did not; keeping it would spend a request every five minutes per
   // device to be told what every frame already says.

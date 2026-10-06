@@ -50,6 +50,8 @@ const {
 } = require('./sessionMetadata');
 const { kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./providers/proma/usage');
+const { buildOpenCodeReviewHistoryGraph, buildOpenCodeReviewPeriods, collectOpenCodeReviewRows,
+  openCodeReviewHistoryRevision } = require('./providers/open-code-review/usage');
 const { DB_PATH: CC_SWITCH_DB_PATH, loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph } = require('./providers/claude/ccSwitch');
 const {
   buildQoderCnHistoryGraph,
@@ -1059,6 +1061,10 @@ async function collectHistoryOnce(options) {
     rawGraphs.push(options.qoderCnGraph);
     histories.push(normalizeHistory(parseGraphResult(options.qoderCnGraph), { capDays, todayKey }));
   }
+  if (options.openCodeReviewGraph) {
+    rawGraphs.push(options.openCodeReviewGraph);
+    histories.push(normalizeHistory(parseGraphResult(options.openCodeReviewGraph), { capDays, todayKey }));
+  }
   if (options.dailyHistoryArchiveEnabled) {
     try {
       const retainedGraph = retainDailyHistory(rawGraphs, {
@@ -1168,6 +1174,7 @@ async function collectUsageOnce(options) {
   const includesCcSwitchClaude = options.ccSwitchClaudeEnabled === true && platformValue === 'win32'
     && normalizedClients.split(',').includes('claude');
   const includesQoderCn = normalizedClients.split(',').includes('qodercn');
+  const includesOpenCodeReview = normalizedClients.split(',').includes('open-code-review');
   const trackedClientSet = new Set(normalizedClients.split(',').filter(Boolean));
   const targetClients = [...new Set(normalizeClientsCsv(options.targetClients).split(',').filter((client) => trackedClientSet.has(client)))];
   const targetRequested = targetClients.length > 0;
@@ -1198,6 +1205,9 @@ async function collectUsageOnce(options) {
   let qoderCnRows = null;
   let qoderCnPricing = null;
   let qoderCnPeriodReadFailed = false;
+  let openCodeReviewRows = null;
+  let openCodeReviewPeriods = null;
+  let ocrHistoryRevision = anchor?.openCodeReviewHistoryRevision;
   let ccSwitchTodayRows = [];
   let ccSwitchClaudeRefreshed = false;
   let ccSwitchTodayAdmitted = anchorUsed && anchor.ccSwitchTodayAdmitted === true;
@@ -1213,6 +1223,16 @@ async function collectUsageOnce(options) {
     try { options.onProgress({ ...progress, updatedAt: new Date().toISOString() }); } catch (_) {}
   };
   if (normalizedClients) {
+    if (includesOpenCodeReview && (!targetRequested || targetClientSet.has('open-code-review') || options.includeHistory)) {
+      openCodeReviewRows = await collectOpenCodeReviewRows({ homeDir: options.homeDir,
+        cacheDir: options.openCodeReviewCacheDir, env: options.env, platform: platformValue, signal: options.signal });
+      ocrHistoryRevision = openCodeReviewHistoryRevision(openCodeReviewRows, collectedAt);
+      if (anchorUsed && ocrHistoryRevision !== anchor.openCodeReviewHistoryRevision) {
+        return collectUsageOnce({ ...options, now: collectedAt, todayOnlyAnchor: null, targetClients: null });
+      }
+      const json = buildOpenCodeReviewPeriods({ rows: openCodeReviewRows, now: collectedAt, allTimeSince });
+      openCodeReviewPeriods = Object.fromEntries(Object.entries(json).map(([period, value]) => [period, extractUsageFromTokscale(value)]));
+    }
     const syncClients = targetRequested ? targetTokscaleClients : tokscaleClients;
     await maybeSyncCursor(syncClients, options.logger, {
       minIntervalMs: selfSyncThrottle.minIntervalForTick(options, 'cursor'),
@@ -1329,6 +1349,7 @@ async function collectUsageOnce(options) {
       }
       if (promaPeriods) freshPartitions.proma = promaPeriods.today;
       if (qoderCnPeriods) freshPartitions.qodercn = qoderCnPeriods.today;
+      if (openCodeReviewPeriods) freshPartitions['open-code-review'] = openCodeReviewPeriods.today;
       if (includesCcSwitchClaude && (!useTargetedPartitions || targetClientSet.has('claude'))) {
         ccSwitchClaudeRefreshed = true;
         const localClaude = freshPartitions.claude;
@@ -1405,6 +1426,12 @@ async function collectUsageOnce(options) {
       month = mergePeriods(month, promaPeriods.month);
       allTime = mergePeriods(allTime, promaPeriods.allTime);
       todayPartitions = { ...(todayPartitions || {}), proma: promaPeriods.today };
+    }
+    if (openCodeReviewPeriods && !anchorUsed) {
+      today = mergePeriods(today, openCodeReviewPeriods.today);
+      month = mergePeriods(month, openCodeReviewPeriods.month);
+      allTime = mergePeriods(allTime, openCodeReviewPeriods.allTime);
+      todayPartitions = { ...(todayPartitions || {}), 'open-code-review': openCodeReviewPeriods.today };
     }
     if (qoderCnPeriods && !anchorUsed) {
       today = mergePeriods(today, qoderCnPeriods.today);
@@ -1597,6 +1624,8 @@ async function collectUsageOnce(options) {
       windowsPeriods,
       todayPartitions,
       qoderCnPeriods,
+      fullScan: !anchorUsed,
+      openCodeReviewHistoryRevision: ocrHistoryRevision,
       ccSwitchAdmittedRows: admittedCcRows,
       ccSwitchTodayAdmitted,
       wslBundle,
@@ -1651,6 +1680,7 @@ async function collectUsageOnce(options) {
       promaGraph: includesProma ? buildPromaHistoryGraph({ rows: promaRows || collectPromaRows(), pricingByModel: promaPricing || {} }) : null,
       ccSwitchClaudeGraph: includesCcSwitchClaude ? ccSwitchClaudeGraph(admittedCcRows.filter((row) => row.date >= allTimeSince)) : null,
       qoderCnGraph: historyQoderCnGraph || null,
+      openCodeReviewGraph: openCodeReviewRows ? buildOpenCodeReviewHistoryGraph({ rows: openCodeReviewRows }) : null,
       historyEnabled: options.historyEnabled,
       commandTimeoutMs: options.historyTimeoutMs,
       capDays: options.historyCapDays,
@@ -2725,6 +2755,7 @@ function startCollector(options) {
           month: saved.month,
           allTime: saved.allTime,
           qoderCnPeriods: saved.qoderCnPeriods || null,
+          openCodeReviewHistoryRevision: saved.openCodeReviewHistoryRevision,
           ccSwitchAdmittedRows: saved.ccSwitchAdmittedRows || [],
           ccSwitchTodayAdmitted: saved.ccSwitchTodayAdmitted === true,
           // Per-client partitions are deliberately rebuilt by the first
@@ -2919,7 +2950,7 @@ function startCollector(options) {
       for (const [client, entry] of Object.entries(summary.clientHealth?.clients || {})) {
         if (entry.data?.lastActivityDay) activityDaysAnchor[client] = entry.data.lastActivityDay;
       }
-      if (!anchored && captured) {
+      if (captured && (!anchored || captured.fullScan)) {
         anchor = {
           dateKey: todayKey,
           today: captured.windowsPeriods.today,
@@ -2927,6 +2958,7 @@ function startCollector(options) {
           allTime: captured.windowsPeriods.allTime,
           todayPartitions: captured.todayPartitions,
           qoderCnPeriods: captured.qoderCnPeriods,
+          openCodeReviewHistoryRevision: captured.openCodeReviewHistoryRevision,
           ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
           ccSwitchTodayAdmitted: captured.ccSwitchTodayAdmitted,
           ...(captured.nativeSessions ? { nativeSessions: captured.nativeSessions } : {}),
@@ -2945,6 +2977,7 @@ function startCollector(options) {
               month: anchor.month,
               allTime: anchor.allTime,
               qoderCnPeriods: anchor.qoderCnPeriods,
+              openCodeReviewHistoryRevision: anchor.openCodeReviewHistoryRevision,
               ccSwitchAdmittedRows: anchor.ccSwitchAdmittedRows,
               ccSwitchTodayAdmitted: anchor.ccSwitchTodayAdmitted,
               wslBundle: wslAnchor,

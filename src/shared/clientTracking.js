@@ -25,6 +25,8 @@ const KNOWN_CLIENTS = CLIENT_IDS.join(',');
 
 const LEGACY_CLIENT_ID_ALIASES = Object.freeze({
   kilocode: 'kilo',
+  ocr: 'open-code-review',
+  opencodereview: 'open-code-review',
   'devin-cli': 'devin',
   'devin-desktop': 'devin',
   micode: 'mimo'

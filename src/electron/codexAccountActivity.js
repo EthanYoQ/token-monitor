@@ -13,6 +13,9 @@ function createCodexAccountActivity(options = {}) {
   const readIdentity = options.readIdentity || readLiveCodexIdentity;
   const readActivity = options.readActivity || readCodexAccountActivity;
   const notify = options.onChange || (() => {});
+  const now = options.now || Date.now;
+  const setTimer = options.setTimeout || setTimeout;
+  const clearTimer = options.clearTimeout || clearTimeout;
   const stored = readJson(filePath, { version: 1, accounts: {} });
   const accounts = stored?.version === 1 && stored.accounts && typeof stored.accounts === 'object'
     ? { ...stored.accounts } : {};
@@ -21,8 +24,31 @@ function createCodexAccountActivity(options = {}) {
     ...(Array.isArray(stored?.observedAccountKeys) ? stored.observedAccountKeys.filter((key) => typeof key === 'string' && key) : [])
   ]);
   const attempts = new Map();
-  let inFlight = null;
+  let pendingAccountRead = null;
+  let controller = null;
+  let timer = null;
+  let lifecycle = 'manual';
+  let generation = 0;
   let scopePersistenceFailed = false;
+
+  function reportError(error) {
+    try { options.onError?.(error); } catch (_) {}
+  }
+
+  function clearScheduledRefresh() {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  }
+
+  function scheduleRefresh(delay = REFRESH_MS) {
+    clearScheduledRefresh();
+    if (lifecycle !== 'enabled') return;
+    timer = setTimer(() => {
+      timer = null;
+      void refresh();
+    }, delay);
+    timer?.unref?.();
+  }
 
   function persist() {
     try {
@@ -40,14 +66,18 @@ function createCodexAccountActivity(options = {}) {
       observedKeys.add(key);
       try { persist(); } catch (error) {
         scopePersistenceFailed = true;
-        options.onError?.(error);
+        reportError(error);
       }
     }
     return key;
   }
 
   function snapshot() {
-    const key = liveKey();
+    let key;
+    try { key = liveKey(); } catch (error) {
+      reportError(error);
+      return null;
+    }
     const saved = key && accounts[key];
     if (!saved) return null;
     if (saved.dailyUsageBuckets != null && !Array.isArray(saved.dailyUsageBuckets)) return null;
@@ -61,23 +91,37 @@ function createCodexAccountActivity(options = {}) {
   }
 
   function refresh({ force = false } = {}) {
-    const key = liveKey();
-    if (!key) return Promise.resolve(null);
-    if (inFlight) return inFlight;
-    const now = Date.now();
-    if (!force && now - (attempts.get(key) || 0) < REFRESH_MS) return Promise.resolve(snapshot());
-    attempts.set(key, now);
-    inFlight = (async () => {
+    if (lifecycle === 'disabled' || lifecycle === 'disposed') return Promise.resolve(null);
+    if (pendingAccountRead) return pendingAccountRead;
+    clearScheduledRefresh();
+    const requestGeneration = generation;
+    const requestController = new AbortController();
+    controller = requestController;
+    const isCurrent = () => generation === requestGeneration && !requestController.signal.aborted;
+    let notifyAfterReadAttempt = false;
+    let nextDelay = REFRESH_MS;
+    const deferredAccountRead = Promise.resolve().then(async () => {
       try {
-        const raw = await readActivity();
-        if (liveKey() !== key) return null;
+        if (!isCurrent()) return null;
+        notifyAfterReadAttempt = true;
+        const key = liveKey();
+        if (!key) return null;
+        const elapsed = now() - (attempts.get(key) ?? -Infinity);
+        if (!force && elapsed < REFRESH_MS) {
+          notifyAfterReadAttempt = false;
+          nextDelay = REFRESH_MS - elapsed;
+          return snapshot();
+        }
+        attempts.set(key, now());
+        const raw = await readActivity({ signal: requestController.signal });
+        if (!isCurrent() || liveKey() !== key) return null;
         let incoming = normalizeAccountActivity(raw, key);
         if (!incoming) return snapshot();
         const current = snapshot();
         let correctionConfirmed = false;
         if (current && incoming.lifetimeTokens < current.lifetimeTokens) {
-          const confirmation = normalizeAccountActivity(await readActivity(), key);
-          if (liveKey() !== key) return null;
+          const confirmation = normalizeAccountActivity(await readActivity({ signal: requestController.signal }), key);
+          if (!isCurrent() || liveKey() !== key) return null;
           correctionConfirmed = Boolean(incoming.dailyCoverageComplete && confirmation
             && confirmation.lifetimeTokens === incoming.lifetimeTokens
             && confirmation.dailyCoverageComplete
@@ -89,21 +133,52 @@ function createCodexAccountActivity(options = {}) {
           options.onConflict?.({ accountKey: key, existing: selected.lifetimeTokens, incoming: incoming.lifetimeTokens });
           return selected;
         }
+        if (!isCurrent() || liveKey() !== key) return null;
         accounts[key] = selected;
         persist();
-        notify(selected);
         return selected;
       } catch (error) {
-        options.onError?.(error);
+        if (!isCurrent()) return null;
+        reportError(error);
         return snapshot();
       } finally {
-        inFlight = null;
+        if (pendingAccountRead === deferredAccountRead) {
+          pendingAccountRead = null;
+          controller = null;
+          if (isCurrent()) {
+            if (notifyAfterReadAttempt) {
+              try { notify(snapshot()); } catch (error) { reportError(error); }
+            }
+            if (!pendingAccountRead) scheduleRefresh(nextDelay);
+          } else if (lifecycle === 'enabled') {
+            void refresh({ force: true });
+          }
+        }
       }
-    })();
-    return inFlight;
+    });
+    pendingAccountRead = deferredAccountRead;
+    return pendingAccountRead;
   }
 
-  return { snapshot, refresh, observe: liveKey, multipleAccounts: () => observedKeys.size > 1 || scopePersistenceFailed };
+  function configure({ enabled, selected }) {
+    if (lifecycle === 'disposed') return;
+    const next = enabled && selected ? 'enabled' : 'disabled';
+    if (lifecycle === next) return;
+    lifecycle = next;
+    generation += 1;
+    clearScheduledRefresh();
+    if (next === 'enabled') void refresh();
+    else controller?.abort();
+  }
+
+  function dispose() {
+    lifecycle = 'disposed';
+    generation += 1;
+    clearScheduledRefresh();
+    controller?.abort();
+  }
+
+  return { snapshot, refresh, configure, dispose, observe: liveKey, multipleAccounts: () => observedKeys.size > 1 || scopePersistenceFailed };
 }
 
 module.exports = { createCodexAccountActivity };
