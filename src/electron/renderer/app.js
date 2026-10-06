@@ -5395,8 +5395,8 @@ function setViewSwitcherOpen(open, { focusMenu = false, focusDisclosure = false 
   if (state.viewSwitcherOpen === nextOpen && !focusMenu && !focusDisclosure) return;
   if (nextOpen) state.viewSwitcherHasOpened = true;
   state.viewSwitcherOpen = nextOpen;
-  if (updateViewSwitcherOpenState({ focusMenu, focusDisclosure })) return;
-  renderViewSwitcher({ focusMenu, focusDisclosure });
+  if (!updateViewSwitcherOpenState({ focusMenu, focusDisclosure })) renderViewSwitcher({ focusMenu, focusDisclosure });
+  syncAutoHideInteraction();
 }
 
 function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {}) {
@@ -5422,8 +5422,7 @@ function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {})
       viewSwitcherLongPressTriggered = false;
       return;
     }
-    state.viewSwitcherOpen = false;
-    updateViewSwitcherOpenState();
+    setViewSwitcherOpen(false);
     renderBreakdownChange(nextBreakdown(state.breakdown));
   });
   current.addEventListener('pointerdown', (event) => {
@@ -5484,8 +5483,7 @@ function renderViewSwitcher({ focusMenu = false, focusDisclosure = false } = {})
     itemLabel.textContent = viewLabelById(id);
     item.append(itemLabel);
     item.addEventListener('click', () => {
-      state.viewSwitcherOpen = false;
-      updateViewSwitcherOpenState();
+      setViewSwitcherOpen(false);
       if (id === state.breakdown) renderViewSwitcher({ focusDisclosure: true });
       else renderBreakdownChange(id);
     });
