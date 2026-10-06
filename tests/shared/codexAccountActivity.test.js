@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const { emptyPeriod } = require('../../src/shared/usage');
 const { createCodexAccountActivity } = require('../../src/electron/codexAccountActivity');
@@ -14,6 +15,7 @@ const {
   projectAccountActivityToHistory
 } = require('../../src/shared/providers/codex/accountActivity');
 const { localDayKey } = require('../../src/shared/history');
+const { createStatsPresentationCache } = require('../../src/electron/statsPublisher');
 
 function applyAccountActivityToStats(stats, snapshot, since, deviceId = '', singleAccount = true, nowMs = Date.parse('2026-09-27T04:10:00Z')) {
   return applyAccountActivityToStatsRaw(stats, snapshot, since, deviceId, singleAccount, nowMs);
@@ -40,6 +42,374 @@ function stats() {
   today.clients = { codex: 100 };
   return { periods: { allTime, today, month: today } };
 }
+
+function readerFixture(t, overrides = {}) {
+  const root = path.join(__dirname, '../../.runtime/.cache');
+  fs.mkdirSync(root, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, 'codex-lifecycle-test-'));
+  const filePath = path.join(dir, 'activity.json');
+  let nowMs = Date.parse('2026-09-27T04:00:00Z');
+  let nextId = 0;
+  const timers = new Map();
+  const notifications = [];
+  const reader = createCodexAccountActivity({
+    filePath,
+    readIdentity: () => ({ accountKey: 'account-a' }),
+    readActivity: () => activity(),
+    onChange: (snapshot) => notifications.push({ snapshot, nowMs }),
+    now: () => nowMs,
+    setTimeout: (callback, delay) => {
+      const id = ++nextId;
+      timers.set(id, { callback, at: nowMs + delay });
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
+    ...overrides
+  });
+  t.after(() => {
+    reader.dispose();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return {
+    reader, timers, notifications, filePath,
+    advance(ms) {
+      nowMs += ms;
+      for (const [id, timer] of timers) {
+        if (timer.at > nowMs) continue;
+        timers.delete(id);
+        timer.callback();
+      }
+    }
+  };
+}
+
+test('enabled account activity refreshes without stats and schedules from completion', async (t) => {
+  let reads = 0;
+  let finish;
+  const { reader, timers, advance } = readerFixture(t, {
+    readActivity: () => {
+      reads += 1;
+      return new Promise((resolve) => { finish = resolve; });
+    }
+  });
+  reader.configure({ enabled: true, selected: true });
+  reader.configure({ enabled: true, selected: true });
+  const first = reader.refresh({ force: true });
+  assert.equal(first, reader.refresh({ force: true }));
+  await Promise.resolve();
+  assert.equal(reads, 1);
+  assert.equal(timers.size, 0);
+  advance(5 * 60_000);
+  finish(activity());
+  await first;
+  assert.equal(timers.size, 1);
+  advance(15 * 60_000 - 1);
+  assert.equal(reads, 1);
+  advance(1);
+  const second = reader.refresh();
+  await Promise.resolve();
+  assert.equal(reads, 2);
+  finish(activity());
+  await second;
+  assert.equal(timers.size, 1);
+  reader.configure({ enabled: true, selected: false });
+  assert.equal(timers.size, 0);
+  advance(30 * 60_000);
+  await reader.refresh({ force: true });
+  assert.equal(reads, 2);
+});
+
+test('failed scheduled reads republish stale account data and recover after callback errors', async (t) => {
+  let reads = 0;
+  const { reader, advance, notifications, timers } = readerFixture(t, {
+    readActivity: () => {
+      reads += 1;
+      if (reads === 1 || reads === 7) return activity();
+      if (reads === 2) throw new Error('synchronous failure');
+      return Promise.reject(new Error('asynchronous failure'));
+    },
+    onError: () => { throw new Error('logging failed'); }
+  });
+  reader.configure({ enabled: true, selected: true });
+  await reader.refresh();
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    advance(15 * 60_000);
+    await reader.refresh();
+  }
+  assert.equal(reads, 6);
+  assert.equal(notifications.length, 6);
+  assert.equal(timers.size, 1);
+  const last = notifications.at(-1);
+  const shown = applyAccountActivityToStats(stats(), last.snapshot, '2024-01-01', '', true, last.nowMs);
+  assert.equal(shown.codexAccountActivity.status, 'stale');
+  assert.equal(shown.codexAccountActivity.error, undefined);
+  assert.equal((await reader.refresh({ force: true })).lifetimeTokens, 67_570);
+  assert.equal(reads, 7);
+});
+
+test('disable then re-enable waits for the aborted physical request before restarting once', async (t) => {
+  let reads = 0;
+  let finish;
+  let signal;
+  const { reader, timers, notifications } = readerFixture(t, {
+    readActivity: (options) => {
+      reads += 1;
+      signal = options.signal;
+      if (reads > 1) return activity();
+      return new Promise((resolve) => { finish = resolve; });
+    }
+  });
+  reader.configure({ enabled: true, selected: true });
+  const first = reader.refresh();
+  await Promise.resolve();
+  reader.configure({ enabled: false, selected: true });
+  assert.equal(signal.aborted, true);
+  reader.configure({ enabled: true, selected: true });
+  reader.configure({ enabled: true, selected: true });
+  assert.equal(reader.refresh({ force: true }), first);
+  assert.equal(reads, 1);
+  finish(activity(1));
+  assert.equal(await first, null);
+  await reader.refresh();
+  assert.equal(reads, 2);
+  assert.equal(notifications.length, 1);
+  assert.equal(reader.snapshot().lifetimeTokens, 67_570);
+  assert.equal(timers.size, 1);
+});
+
+test('disposal aborts and rejects late results without writes, notifications or a timer', async (t) => {
+  let finish;
+  let signal;
+  const { reader, filePath, timers, notifications } = readerFixture(t, {
+    readActivity: (options) => {
+      signal = options.signal;
+      return new Promise((resolve) => { finish = resolve; });
+    }
+  });
+  reader.configure({ enabled: true, selected: true });
+  const pending = reader.refresh();
+  await Promise.resolve();
+  const before = fs.readFileSync(filePath, 'utf8');
+  reader.dispose();
+  assert.equal(signal.aborted, true);
+  finish(activity());
+  assert.equal(await pending, null);
+  assert.equal(fs.readFileSync(filePath, 'utf8'), before);
+  assert.equal(notifications.length, 0);
+  assert.equal(timers.size, 0);
+  reader.configure({ enabled: true, selected: true });
+  assert.equal(await reader.refresh({ force: true }), null);
+});
+
+test('a changed live identity prevents an in-flight result from entering either account cache', async (t) => {
+  let accountKey = 'account-a';
+  let finish;
+  const { reader } = readerFixture(t, {
+    readIdentity: () => ({ accountKey }),
+    readActivity: () => new Promise((resolve) => { finish = resolve; })
+  });
+  const pending = reader.refresh();
+  await Promise.resolve();
+  accountKey = 'account-b';
+  finish(activity());
+  assert.equal(await pending, null);
+  assert.equal(reader.snapshot(), null);
+  accountKey = 'account-a';
+  assert.equal(reader.snapshot(), null);
+  assert.equal(reader.multipleAccounts(), true);
+});
+
+test('identity and notification errors cannot strand the refresh slot or timer', async (t) => {
+  let identityReads = 0;
+  let reads = 0;
+  const { reader, timers } = readerFixture(t, {
+    readIdentity: () => {
+      identityReads += 1;
+      if (identityReads === 1) throw new Error('temporary identity error');
+      return { accountKey: 'account-a' };
+    },
+    readActivity: () => { reads += 1; return activity(); },
+    onChange: () => { throw new Error('presentation error'); },
+    onError: () => { throw new Error('logging error'); }
+  });
+  reader.configure({ enabled: true, selected: true });
+  assert.equal(await reader.refresh(), null);
+  assert.equal((await reader.refresh({ force: true })).lifetimeTokens, 67_570);
+  assert.equal((await reader.refresh({ force: true })).lifetimeTokens, 67_570);
+  assert.equal(reads, 2);
+  assert.equal(timers.size, 1);
+});
+
+test('a synchronous account read failure does not prevent the next refresh', async () => {
+  const root = path.join(__dirname, '../../.runtime/.cache');
+  fs.mkdirSync(root, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, 'codex-retry-test-'));
+  let reads = 0;
+  const reader = createCodexAccountActivity({
+    filePath: path.join(dir, 'activity.json'),
+    readIdentity: () => ({ accountKey: 'account-a' }),
+    readActivity: () => {
+      reads += 1;
+      if (reads === 1) throw new Error('temporary command resolution failure');
+      return activity();
+    }
+  });
+  try {
+    assert.equal(await reader.refresh({ force: true }), null);
+    const recovered = await reader.refresh({ force: true });
+    assert.equal(reads, 2);
+    assert.equal(recovered.lifetimeTokens, 67_570);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Home Day and Month replace Codex with the named account date buckets', () => {
+  const raw = activity(1_000, '2026-09-26');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-26', tokens: 700 },
+    { startDate: '2026-09-27', tokens: 300 }
+  ];
+  const original = stats();
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const shown = applyAccountActivityToStats(original, snapshot, '2024-01-01');
+  assert.equal(shown.periods.today.clients.codex, 300);
+  assert.equal(shown.periods.month.clients.codex, 1_000);
+  assert.equal(shown.periods.allTime.clients.codex, 1_000);
+  assert.equal(original.periods.today.clients.codex, 100);
+});
+
+test('lagging account dates retain local Day but never add it to official Month or Total', () => {
+  const original = stats();
+  original.periods.today = { ...emptyPeriod(), totalTokens: 225_000_010, clients: { codex: 225_000_000, claude: 10 } };
+  original.periods.month = { ...emptyPeriod(), totalTokens: 225_000_020, clients: { codex: 225_000_000, claude: 20 } };
+  const raw = activity(83_062_564_566, '2026-09-30');
+  raw.codexAccountActivity.fetchedAt = '2026-10-06T03:32:53.294Z';
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-30', tokens: 70_693_165_305 },
+    { startDate: '2026-10-05', tokens: 12_369_399_261 }
+  ];
+  const shown = applyAccountActivityToStats(original, normalizeAccountActivity(raw, 'account-a'),
+    '2024-01-01', '', true, new Date(2026, 9, 6, 12).getTime());
+  assert.equal(shown.periods.today, original.periods.today);
+  assert.equal(shown.periods.month.totalTokens, 12_369_399_281);
+  assert.equal(shown.periods.allTime.totalTokens, 83_062_566_566);
+  assert.equal(shown.codexAccountActivity.periods.today.headlineSource, 'local');
+  assert.equal(shown.codexAccountActivity.periods.month.headlineSource, 'codex-account');
+  assert.equal(shown.codexAccountActivity.periods.month.coverageThrough, '2026-10-05');
+  assert.equal(shown.codexAccountActivity.periods.month.reportingLag, true);
+  assert.equal(shown.codexAccountActivity.periods.month.dateBoundary, 'source-defined');
+  assert.equal(original.periods.month.clients.codex, 225_000_000);
+});
+
+test('official zero differs from a missing day and all period components preserve other clients', () => {
+  const original = stats();
+  const period = {
+    ...emptyPeriod(), totalTokens: 130, clients: { codex: 100, claude: 30 },
+    cacheReadTokens: 25, clientCacheReads: { codex: 20, claude: 5 },
+    cacheWriteTokens: 12, clientCacheWrites: { codex: 10, claude: 2 },
+    outputTokens: 24, clientOutputs: { codex: 20, claude: 4 },
+    unclassifiedTokens: 4, clientUnclassifiedTokens: { codex: 1, claude: 3 },
+    costUsd: 9, clientCosts: { codex: 6, claude: 3 }, models: { localModel: 130 }
+  };
+  original.periods = { today: period, month: period, allTime: period };
+  const raw = activity(400, '2026-09-26');
+  raw.codexAccountActivity.dailyUsageBuckets.push({ startDate: '2026-09-27', tokens: 0 });
+  const shown = applyAccountActivityToStats(original, normalizeAccountActivity(raw, 'account-a'), '2024-01-01');
+  for (const [name, official] of [['today', 0], ['month', 400], ['allTime', 400]]) {
+    const projected = shown.periods[name];
+    assert.equal(projected.totalTokens, 30 + official);
+    assert.deepEqual(projected.clients, { codex: official, claude: 30 });
+    assert.deepEqual(projected.clientCacheReads, { claude: 5 });
+    assert.deepEqual(projected.clientCacheWrites, { claude: 2 });
+    assert.deepEqual(projected.clientOutputs, { claude: 4 });
+    assert.equal(projected.cacheReadTokens, 5);
+    assert.equal(projected.cacheWriteTokens, 2);
+    assert.equal(projected.outputTokens, 4);
+    assert.equal(projected.unclassifiedTokens, 3 + official);
+    assert.deepEqual(projected.clientUnclassifiedTokens, { codex: official, claude: 3 });
+    assert.equal(projected.models, period.models);
+    assert.equal(projected.costUsd, 9);
+    assert.equal(projected.capabilities.tokenComponents, false);
+  }
+  assert.equal(period.clients.codex, 100);
+  assert.equal(shown.codexAccountActivity.periods.today.headlineSource, 'codex-account');
+});
+
+test('history preserves missing account dates and replaces an explicit zero', () => {
+  const raw = activity(100, '2026-09-26');
+  raw.codexAccountActivity.dailyUsageBuckets.push({ startDate: '2026-09-27', tokens: 0 });
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const localRow = (date) => ({ date, tokens: 25, cost: 3,
+    perClient: { codex: { tokens: 20, cost: 2 }, claude: { tokens: 5, cost: 1 } } });
+  const history = { daily: [localRow('2026-09-27'), localRow('2026-09-28')],
+    monthly: [{ month: '2026-09', tokens: 50, perClient: { codex: { tokens: 40 }, claude: { tokens: 10 } } }], summary: {} };
+  const presented = applyAccountActivityToStats(stats(), snapshot, '2024-01-01');
+  const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
+  assert.deepEqual(projected.daily.map((row) => [row.date, row.tokens]), [
+    ['2026-09-26', 100], ['2026-09-27', 5], ['2026-09-28', 25]
+  ]);
+  assert.equal(projected.daily[1].perClient.codex.tokens, 0);
+  assert.equal(projected.daily[2].perClient.codex.tokens, 20);
+  assert.equal(projected.daily[2].cost, 3);
+  assert.equal(projected.monthly[0].tokens, 110);
+  assert.equal(projected.summary.totalTokens, presented.periods.allTime.totalTokens);
+  assert.deepEqual(projected.codexAccountActivity.supplementaryLocalDates, ['2026-09-28']);
+  assert.equal(history.daily[0].tokens, 25);
+});
+
+test('Home selects local date names without shifting official buckets and invalidates at month rollover', () => {
+  const previousTz = process.env.TZ;
+  process.env.TZ = 'Asia/Singapore';
+  try {
+    const raw = activity(300, '2026-09-30');
+    raw.codexAccountActivity.fetchedAt = '2026-09-30T15:59:00Z';
+    raw.codexAccountActivity.dailyUsageBuckets.push({ startDate: '2026-10-01', tokens: 0 });
+    const snapshot = normalizeAccountActivity(raw, 'account-a');
+    const source = fs.readFileSync(path.join(__dirname, '../../src/electron/main.js'), 'utf8');
+    const body = source.match(/function electronPresentationStats\([^]*?\n\}/)[0];
+    let nowMs = Date.parse('2026-09-30T15:59:30Z');
+    class ClockDate extends Date { static now() { return nowMs; } }
+    const project = vm.runInNewContext(`(${body})`, {
+      settings: { clients: 'codex,claude', codexAccountActivityEnabled: true, allTimeSince: '2024-01-01' },
+      codexAccountActivity: { snapshot: () => snapshot, multipleAccounts: () => false },
+      syncProvenanceActive: () => false,
+      localDayKey,
+      isAccountActivityStale: () => false,
+      applyAccountActivityToStats: applyAccountActivityToStatsRaw,
+      projectLimitStatsForDisplay: (value) => value,
+      projectModelAliasStats: (value) => value,
+      presentationCache: createStatsPresentationCache(),
+      Date: ClockDate
+    });
+    const original = stats();
+    const september = project(original);
+    assert.equal(september.periods.today.clients.codex, 300);
+    assert.equal(project(original), september);
+    nowMs = Date.parse('2026-09-30T16:00:00Z');
+    const october = project(original);
+    assert.notEqual(october, september);
+    assert.equal(october.periods.today.clients.codex, 0);
+    assert.equal(october.periods.month.clients.codex, 0);
+    assert.equal(october.codexAccountActivity.periods.today.selectedDate, '2026-10-01');
+  } finally {
+    if (previousTz === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTz;
+  }
+});
+
+test('invalid local totals and foreign Codex usage in any period block replacement', () => {
+  const snapshot = normalizeAccountActivity(activity(), 'account-a');
+  const invalid = stats();
+  invalid.periods.allTime.totalTokens = 1;
+  assert.equal(applyAccountActivityToStats(invalid, snapshot, '2024-01-01').periods, invalid.periods);
+  const overflow = stats();
+  overflow.periods.allTime.totalTokens = Number.MAX_SAFE_INTEGER;
+  assert.equal(applyAccountActivityToStats(overflow, snapshot, '2024-01-01').codexAccountActivity.status, 'conflict');
+  const foreign = stats();
+  foreign.devices = [{ deviceId: 'other', periods: { today: { clients: { codex: 1 } } } }];
+  assert.equal(applyAccountActivityToStats(foreign, snapshot, '2024-01-01', 'this').codexAccountActivity.status, 'scope-unverified');
+});
 
 test('account total replaces local Codex without summing the two sources or changing local dates', () => {
   const original = stats();
@@ -119,6 +489,25 @@ test('stale account history preserves the locally verified streaks', () => {
   assert.equal(projected.summary.longestStreak, 1);
 });
 
+test('conflicting account history preserves its status and locally verified streaks', () => {
+  const raw = activity(100, '2026-09-28');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-27', tokens: 50 }, { startDate: '2026-09-28', tokens: 50 }
+  ];
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const history = {
+    daily: [{ date: '2026-09-28', tokens: 200, perClient: { codex: { tokens: 200 } } }],
+    monthly: [], summary: { currentStreak: 1, longestStreak: 1 }
+  };
+  const presented = { periods: { allTime: { totalTokens: 100 } }, codexAccountActivity: {
+    status: 'conflict', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens
+  } };
+  const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
+  assert.equal(projected.codexAccountActivity.status, 'conflict');
+  assert.equal(projected.summary.currentStreak, 1);
+  assert.equal(projected.summary.longestStreak, 1);
+});
+
 test('applied account Dashboard days use the account UTC boundary while stale days stay local', () => {
   const previousTz = process.env.TZ;
   process.env.TZ = 'America/Los_Angeles';
@@ -194,18 +583,43 @@ test('a second device with unverified Codex account prevents overlapping aggrega
   assert.equal(shown.codexAccountActivity.status, 'scope-unverified');
 });
 
-test('local Codex above account total does not leak conflicting All Time details', () => {
+test('local Codex above account total keeps local details for every tool with explicit attribution', () => {
   const aggregate = stats();
   aggregate.allTimeSessionsView = { 'codex:old': { client: 'codex', totalTokens: 29_930 } };
-  aggregate.periods.allTime.models = { 'gpt-old': 29_930 };
+  aggregate.periods.allTime.models = { 'gpt-old': 29_930, 'claude-model': 2_000 };
   aggregate.periods.allTime.sessions = aggregate.allTimeSessionsView;
+  aggregate.periods.allTime.costUsd = 12;
+  aggregate.periods.allTime.clientCosts = { codex: 10, claude: 2 };
   const shown = applyAccountActivityToStats(aggregate, normalizeAccountActivity(activity(20_000), 'account-a'), '2024-01-01');
   assert.equal(shown.periods.allTime.clients.codex, 20_000);
   assert.equal(shown.periods.allTime.totalTokens, 22_000);
   assert.equal(shown.codexAccountActivity.status, 'conflict');
-  assert.deepEqual(shown.periods.allTime.models, {});
-  assert.deepEqual(shown.periods.allTime.sessions, {});
-  assert.equal(shown.allTimeSessionsView, undefined);
+  assert.deepEqual(shown.periods.allTime.models, aggregate.periods.allTime.models);
+  assert.deepEqual(shown.periods.allTime.sessions, aggregate.periods.allTime.sessions);
+  assert.deepEqual(shown.periods.allTime.clientCosts, { codex: 10, claude: 2 });
+  assert.equal(shown.periods.allTime.costUsd, 12);
+  assert.equal(shown.allTimeSessionsView, aggregate.allTimeSessionsView);
+  assert.equal(shown.codexAccountActivity.detailsSuppressed, false);
+  assert.equal(shown.codexAccountActivity.periods.allTime.detailSource, 'local');
+});
+
+test('renderer retains archived sessions when local Codex detail exceeds the account total', () => {
+  const { withAllTimeSessions } = require('../../src/electron/renderer/allTimeSessions');
+  const overlay = (value) => withAllTimeSessions(value, value.allTimeSessionsView);
+  const original = stats();
+  const archivedClaude = { client: 'claude', totalTokens: 2_000, archived: true };
+  original.allTimeSessionsView = { 'claude:archived': archivedClaude };
+  const shown = applyAccountActivityToStats(original, normalizeAccountActivity(activity(20_000), 'account-a'), '2024-01-01');
+  assert.equal(shown.codexAccountActivity.status, 'conflict');
+  assert.equal(shown.codexAccountActivity.detailsSuppressed, false);
+  assert.equal(overlay(shown).periods.allTime.sessions['claude:archived'], archivedClaude);
+  assert.equal(shown.periods.allTime.clients.codex, 20_000);
+  assert.equal(original.periods.allTime.sessions['claude:archived'], undefined);
+
+  const legacy = stats();
+  legacy.allTimeSessionsView = { 'claude:archived': archivedClaude };
+  legacy.codexAccountActivity = { status: 'conflict', detailsSuppressed: true };
+  assert.equal(overlay(legacy).periods.allTime.sessions['claude:archived'], undefined);
 });
 
 test('an old account reading is visibly stale while remaining the last known total', () => {

@@ -292,6 +292,102 @@ test('live-only archive preserves native day, client, and model components', () 
   assert.equal(day.perModel.opus.outputTokens, 20);
 });
 
+for (const sharedModel of [false, true]) {
+  test(`unavailable clients retain their prior live observations with ${sharedModel ? 'shared' : 'distinct'} model components`, () => {
+    const date = '2026-10-06';
+    const ocrModel = sharedModel ? 'opus' : 'review-model';
+    const initial = captureLiveDailyHistory({}, {
+      ...livePeriod(135), capabilities: { tokenComponents: true },
+      cacheReadTokens: 70, cacheWriteTokens: 10, outputTokens: 25,
+      clients: { claude: 15, 'open-code-review': 120 },
+      clientCacheReads: { 'open-code-review': 70 }, clientCacheWrites: { 'open-code-review': 10 },
+      clientOutputs: { claude: 5, 'open-code-review': 20 },
+      models: sharedModel ? { opus: 135 } : { opus: 15, [ocrModel]: 120 },
+      modelCacheReads: { [ocrModel]: 70 }, modelCacheWrites: { [ocrModel]: 10 },
+      modelOutputs: sharedModel ? { opus: 25 } : { opus: 5, [ocrModel]: 20 },
+      clientModels: { claude: { opus: 15 }, 'open-code-review': { [ocrModel]: 120 } }
+    }, { todayKey: date });
+    const previousOcr = Object.values(initial.liveDays[date].observations).find(({ client }) => client === 'open-code-review');
+    const captured = captureLiveDailyHistory(initial, {
+      ...livePeriod(30), capabilities: { tokenComponents: true }, outputTokens: 10,
+      clientOutputs: { claude: 10 }, modelOutputs: { opus: 10 }
+    }, { todayKey: date, unavailableClients: ['open-code-review'] });
+    const observations = Object.values(captured.liveDays[date].observations);
+    assert.equal(observations.find(({ client }) => client === 'claude').tokens, 30);
+    assert.deepEqual(observations.find(({ client }) => client === 'open-code-review'), previousOcr);
+    const day = historyFrom(graphFromDailyHistoryArchive([], captured, { todayKey: date }), date).daily[0];
+    assert.equal(day.tokens, 150);
+    assert.equal(day.outputTokens, 30);
+    assert.equal(day.cacheReadTokens, 70);
+    assert.equal(day.perClient.claude.outputTokens, 10);
+    assert.equal(day.perClient['open-code-review'].outputTokens, 20);
+    assert.equal(day.tokenComponentsAvailable, !sharedModel);
+    if (sharedModel) {
+      assert.equal(day.perModel.opus.outputTokens, 10);
+      assert.equal(day.perModel.opus.unclassifiedTokens, 120);
+    } else {
+      assert.equal(day.perModel[ocrModel].outputTokens, 20);
+    }
+    const inputOnly = captureLiveDailyHistory(captured, {
+      ...livePeriod(31), capabilities: { tokenComponents: true }
+    }, { todayKey: date, unavailableClients: ['open-code-review'] });
+    const inputDay = historyFrom(graphFromDailyHistoryArchive([], inputOnly, { todayKey: date }), date).daily[0];
+    assert.equal(inputDay.perClient.claude.unclassifiedTokens, 0, 'an exact input-only client has no unknown components');
+    if (!sharedModel) assert.equal(inputDay.perModel.opus.unclassifiedTokens, 0);
+  });
+}
+
+test('unavailable graph clients keep existing observations without adding cached rows on a new day', () => {
+  const date = '2026-10-06';
+  const nextDate = '2026-10-07';
+  const initial = captureDailyHistoryArchive({}, graph(date, [
+    client('claude', 'opus', 15, 0, 1), client('open-code-review', 'review', 120, 0, 1)
+  ]), { todayKey: date });
+  const captured = captureDailyHistoryArchive(initial, [
+    graph(date, [client('claude', 'opus', 30, 0, 2), client('open-code-review', 'review', 999, 0, 2)]),
+    graph(nextDate, [client('claude', 'opus', 20, 0, 1), client('open-code-review', 'review', 120, 0, 1)])
+  ], { todayKey: nextDate, unavailableClients: ['open-code-review'] });
+  const oldDay = Object.values(captured.days[date].observations);
+  assert.equal(oldDay.find(({ client }) => client === 'claude').tokens, 30);
+  assert.equal(oldDay.find(({ client }) => client === 'open-code-review').tokens, 120);
+  assert.deepEqual(Object.values(captured.days[nextDate].observations).map(({ client, tokens }) => [client, tokens]), [['claude', 20]]);
+});
+
+test('a larger healthy graph retains unavailable client observations from the live archive', () => {
+  const date = '2026-10-06';
+  const initial = captureLiveDailyHistory({}, {
+    totalTokens: 135, clients: { claude: 15, 'open-code-review': 120 },
+    clientModels: { claude: { opus: 15 }, 'open-code-review': { review: 120 } }
+  }, { todayKey: date });
+  const restored = historyFrom(graphFromDailyHistoryArchive(
+    graph(date, [client('claude', 'opus', 500, 0, 5)]), initial,
+    { todayKey: date, unavailableClients: ['open-code-review'] }
+  ), date).daily[0];
+  assert.equal(restored.tokens, 620);
+  assert.equal(restored.perClient.claude.tokens, 500);
+  assert.equal(restored.perClient['open-code-review'].tokens, 120);
+});
+
+test('unavailable live capture rebases its healthy overlay on the latest saved client observations', () => {
+  const date = '2026-10-06';
+  const snapshot = (claude, ocr) => captureLiveDailyHistory({}, {
+    totalTokens: claude + ocr, clients: { claude, 'open-code-review': ocr },
+    clientModels: { claude: { opus: claude }, 'open-code-review': { review: ocr } }
+  }, { todayKey: date });
+  const initial = snapshot(15, 120);
+  const latest = snapshot(15, 240);
+  const overlay = snapshot(200, 120);
+  let reads = 0, saved;
+  retainLiveDailyHistory(livePeriod(200), {
+    todayKey: date, unavailableClients: ['open-code-review'], liveDays: overlay.liveDays,
+    readJson: () => ++reads === 1 ? initial : latest,
+    writeJsonAtomic: (_path, value) => { saved = value; }
+  });
+  const observations = Object.values(saved.liveDays[date].observations);
+  assert.equal(observations.find(({ client }) => client === 'claude').tokens, 200);
+  assert.equal(observations.find(({ client }) => client === 'open-code-review').tokens, 240);
+});
+
 test('live archive round-trip preserves known components in a partial native period', () => {
   const archive = captureLiveDailyHistory({}, {
     capabilities: { tokenComponents: false },

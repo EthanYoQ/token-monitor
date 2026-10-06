@@ -6270,7 +6270,8 @@ function render() {
   const period = state.stats.periods?.[state.period] || { totalTokens: 0, costUsd: 0, clients: {} };
   const fixedUnavailable = derivedPeriod && state.fixedPeriodSnapshot?.status !== 'ready';
   if (els.codexAccountActivityNote) {
-    const activity = state.period === 'allTime' ? state.stats.codexAccountActivity : null;
+    const activity = ['today', 'month', 'allTime'].includes(state.period) ? state.stats.codexAccountActivity : null;
+    const attribution = activity?.periods?.[state.period];
     const activityMessageKeys = {
       applied: 'usage.codexAccountActivity.applied',
       conflict: 'usage.codexAccountActivity.conflict',
@@ -6279,9 +6280,24 @@ function render() {
       'range-unverified': 'usage.codexAccountActivity.rangeUnverified'
     };
     els.codexAccountActivityNote.classList.toggle('hidden', !activity);
-    els.codexAccountActivityNote.textContent = activity
-      ? `${t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified'])} ${activity.fetchedAt ? new Date(activity.fetchedAt).toLocaleString(currentLocale()) : ''}`.trim()
-      : '';
+    const notes = [];
+    if (attribution) {
+      const sourceKey = state.period === 'allTime' ? 'applied'
+        : `${state.period}${attribution.headlineSource === 'local' ? 'Local' : ''}`;
+      notes.push(t(`usage.codexAccountActivity.${sourceKey}`, {
+        date: attribution.selectedDate, month: attribution.selectedMonth
+      }));
+      notes.push(t('usage.codexAccountActivity.coverage', { date: attribution.coverageThrough }));
+      notes.push(t('usage.codexAccountActivity.boundary'));
+      notes.push(t('usage.codexAccountActivity.details'));
+      if (activity.status !== 'applied') notes.push(t(activityMessageKeys[activity.status]));
+    } else if (activity) {
+      notes.push(t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified']));
+    }
+    if (activity?.fetchedAt) notes.push(t('usage.codexAccountActivity.lastRead', {
+      date: new Date(activity.fetchedAt).toLocaleString(currentLocale())
+    }));
+    els.codexAccountActivityNote.textContent = notes.join(' ');
   }
   const detailUnavailable = derivedPeriod
     && !fixedPeriodRangesApi.supportsBreakdown(state.period, state.breakdown, {

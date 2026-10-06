@@ -76,6 +76,7 @@
     { id: 'workbuddy', label: 'WorkBuddy' },
     { id: 'proma', label: 'Proma', locallyParsed: true },
     { id: 'qodercn', label: 'Qoder CN', defaultTracked: false, locallyParsed: true },
+    { id: 'open-code-review', label: 'Open Code Review', defaultTracked: false, locallyParsed: true },
     { id: 'reasonix', label: 'Reasonix' },
     { id: 'dsh', label: 'DeepSeek Harness' },
     { id: 'cherrystudio', label: 'Cherry Studio' },

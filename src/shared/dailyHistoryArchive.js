@@ -106,7 +106,7 @@ function normalizeComponentValues(value, totalTokens, exact) {
     ...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
     ...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
     ...(outputTokens > 0 ? { outputTokens } : {}),
-    ...(unclassifiedTokens > 0 ? { unclassifiedTokens } : {})
+    ...(unclassifiedTokens > 0 || (!exact && value?.unclassifiedTokens === 0) ? { unclassifiedTokens } : {})
   };
 }
 
@@ -285,6 +285,7 @@ function shouldReplaceObservation(previous, incoming) {
 
 function captureDailyHistoryArchive(existingArchive, graphs, options = {}) {
   const archive = normalizeDailyHistoryArchive(existingArchive);
+  const unavailableClients = new Set((options.unavailableClients || []).map(normalizeTokscaleClientName));
   const todayKey = String(options.todayKey || '').slice(0, 10);
   const hasTodayKey = DAY_KEY_RE.test(todayKey);
   const incomingDays = observationsFromGraphs(graphs, { archive });
@@ -306,6 +307,7 @@ function captureDailyHistoryArchive(existingArchive, graphs, options = {}) {
       observations: { ...previous.observations }
     };
     for (const [key, observation] of Object.entries(incoming.observations)) {
+      if (unavailableClients.has(observation.client)) continue;
       if (shouldReplaceObservation(previous.observations[key], observation)) {
         next.observations[key] = observation;
       }
@@ -527,6 +529,52 @@ function mergeLiveDayMetadata(liveDay, previousDay) {
   };
 }
 
+function preserveUnavailableLiveClients(incoming, previous, unavailableClients) {
+  if (!incoming || unavailableClients.size === 0) return incoming;
+  const parts = [
+    [incoming, (client) => !unavailableClients.has(client)],
+    [previous, (client) => unavailableClients.has(client)]
+  ].filter(([day]) => day).map(([day, keep]) => ({
+    day,
+    observations: Object.fromEntries(Object.entries(day.observations).filter(([, value]) => keep(value.client)))
+  }));
+  const observations = Object.assign({}, ...parts.map((part) => part.observations));
+  if (isDeepStrictEqual(observations, incoming.observations)) return incoming;
+  const sumComponents = (values) => Object.fromEntries(
+    ['cacheReadTokens', 'cacheWriteTokens', 'outputTokens', 'unclassifiedTokens']
+      .map((key) => [key, values.reduce((sum, value) => sum + num(value?.[key]), 0)])
+  );
+  const perClient = {}, perModel = {};
+  for (const { day, observations: selected } of parts) {
+    const allTokens = observationTokenMaps(day.observations);
+    const selectedTokens = observationTokenMaps(selected);
+    const rows = Object.values(selected);
+    for (const [client, tokens] of Object.entries(selectedTokens.perClient)) {
+      perClient[client] = day.componentSummary
+        ? normalizeComponentValues(day.componentSummary.perClient?.[client], tokens, day.componentSummary.tokenComponentsAvailable)
+        : sumComponents(rows.filter((row) => row.client === client));
+      perClient[client].unclassifiedTokens ??= 0;
+    }
+    for (const [model, tokens] of Object.entries(selectedTokens.perModel)) {
+      const wholeModelComponents = tokens === allTokens.perModel[model] && day.componentSummary
+        ? day.componentSummary.perModel?.[model] || {} : null;
+      const selectedComponents = wholeModelComponents
+        ? normalizeComponentValues(wholeModelComponents, tokens, day.componentSummary.tokenComponentsAvailable)
+        : sumComponents(rows.filter((row) => row.modelId === model));
+      perModel[model] = sumComponents([perModel[model], selectedComponents]);
+    }
+  }
+  const componentSummary = {
+    tokenComponentsAvailable: [...Object.values(perClient), ...Object.values(perModel)]
+      .every((value) => num(value.unclassifiedTokens) === 0),
+    ...sumComponents(Object.values(perClient)), perClient, perModel
+  };
+  return normalizeDay({
+    ...incoming, observations, componentSummary,
+    activeTimeMs: Math.max(incoming.activeTimeMs, num(previous?.activeTimeMs))
+  }, incoming.date);
+}
+
 function captureLiveDailyHistory(existingArchive, period, options = {}) {
   const archive = normalizeDailyHistoryArchive(existingArchive);
   const date = String(options.todayKey || '').slice(0, 10);
@@ -535,9 +583,12 @@ function captureLiveDailyHistory(existingArchive, period, options = {}) {
       if (liveDate > date) delete archive.liveDays[liveDate];
     }
   }
-  const incoming = periodLiveDay(period, date);
-  if (!incoming) return archive;
   const previous = archive.liveDays?.[date];
+  const incoming = preserveUnavailableLiveClients(
+    periodLiveDay(period, date), previous,
+    new Set((options.unavailableClients || []).map(normalizeTokscaleClientName))
+  );
+  if (!incoming) return archive;
   if (!previous || liveDayIsGreater(incoming, previous)) {
     archive.liveDays = { ...(archive.liveDays || {}), [date]: incoming };
   }
@@ -574,8 +625,18 @@ function graphFromDailyHistoryArchive(graphs, archive, options = {}) {
     if (!previous) {
       currentDays.set(date, liveDay);
     } else {
-      const selected = liveDayIsGreater(liveDay, previous) ? mergeLiveDayMetadata(liveDay, previous) : previous;
-      currentDays.set(date, withReconciledCursorCosts(selected, previous, liveDay));
+      const previousClients = observationTokenMaps(previous.observations).perClient;
+      const liveClients = observationTokenMaps(liveDay.observations).perClient;
+      const keepPrevious = new Set(), keepLive = new Set();
+      for (const client of options.unavailableClients || []) {
+        const normalized = normalizeTokscaleClientName(client);
+        (num(previousClients[normalized]) >= num(liveClients[normalized]) ? keepPrevious : keepLive).add(normalized);
+      }
+      const graphCandidate = preserveUnavailableLiveClients(previous, liveDay, keepLive);
+      const liveCandidate = preserveUnavailableLiveClients(liveDay, previous, keepPrevious);
+      const selected = liveDayIsGreater(liveCandidate, graphCandidate)
+        ? mergeLiveDayMetadata(liveCandidate, graphCandidate) : graphCandidate;
+      currentDays.set(date, withReconciledCursorCosts(selected, graphCandidate, liveCandidate));
     }
   }
 
@@ -677,13 +738,15 @@ function clearDailyHistoryArchive(options = {}) {
   }
 }
 
-function mergeLiveDaysIntoArchive(existingArchive, liveDays) {
+function mergeLiveDaysIntoArchive(existingArchive, liveDays, options) {
   const archive = normalizeDailyHistoryArchive(existingArchive);
   const incoming = normalizeDailyHistoryArchive({ liveDays }).liveDays || {};
+  const unavailableClients = new Set((options.unavailableClients || []).map(normalizeTokscaleClientName));
   for (const [date, liveDay] of Object.entries(incoming)) {
     const previous = archive.liveDays?.[date];
-    if (!previous || liveDayIsGreater(liveDay, previous)) {
-      archive.liveDays = { ...(archive.liveDays || {}), [date]: liveDay };
+    const candidate = preserveUnavailableLiveClients(liveDay, previous, unavailableClients);
+    if (candidate && (!previous || liveDayIsGreater(candidate, previous))) {
+      archive.liveDays = { ...(archive.liveDays || {}), [date]: candidate };
     }
   }
   return archive;
@@ -698,7 +761,7 @@ function archiveWriteEnabled(options = {}) {
 function retainDailyHistory(graphs, options = {}) {
   const previous = readDailyHistoryArchive(options);
   const capture = (archive) => captureDailyHistoryArchive(
-    mergeLiveDaysIntoArchive(archive, options.liveDays),
+    mergeLiveDaysIntoArchive(archive, options.liveDays, options),
     graphs,
     options
   );
@@ -722,7 +785,7 @@ function retainDailyHistory(graphs, options = {}) {
 function retainLiveDailyHistory(period, options = {}) {
   const previous = readDailyHistoryArchive(options);
   const capture = (archive) => captureLiveDailyHistory(
-    mergeLiveDaysIntoArchive(archive, options.liveDays),
+    mergeLiveDaysIntoArchive(archive, options.liveDays, options),
     period,
     options
   );

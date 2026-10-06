@@ -352,7 +352,7 @@ function renderLegend(model) {
 }
 
 function renderTrends() {
-  const accountBacked = ['applied', 'stale'].includes(state.history?.codexAccountActivity?.status);
+  const accountBacked = ['applied', 'stale', 'conflict'].includes(state.history?.codexAccountActivity?.status);
   const trendScopeKey = state.mode !== 'kline' && state.stackBy === 'model'
     ? 'dashboard.scope.localModels' : 'dashboard.scope.accountHeatmap';
   els.trendsScope.classList.toggle('hidden', !accountBacked);
@@ -414,7 +414,7 @@ function renderBreakdown() {
     grandTotal += Number(d.tokens || 0);
   }
   
-  const accountBacked = ['applied', 'stale'].includes(state.history?.codexAccountActivity?.status);
+  const accountBacked = ['applied', 'stale', 'conflict'].includes(state.history?.codexAccountActivity?.status);
   const buildCol = (titleKey, map, colorFn, localOnly = false) => {
     const rows = Object.entries(map).filter(x => x[1] > 0).sort((a, b) => b[1] - a[1]).slice(0, 5);
     if (rows.length === 0) return '';
@@ -497,11 +497,21 @@ function balanceStatCards() {
 }
 
 function renderActivity() {
-  const accountBacked = ['applied', 'stale'].includes(state.history?.codexAccountActivity?.status);
-  const staleNote = state.history?.codexAccountActivity?.status === 'stale' ? ` ${t('dashboard.scope.stale')}` : '';
+  const account = state.history?.codexAccountActivity;
+  const accountBacked = ['applied', 'stale', 'conflict'].includes(account?.status);
   const heatmapScopeKey = state.heatmapMetric === 'cost' ? 'dashboard.scope.localHeatmap' : 'dashboard.scope.accountHeatmap';
   els.scopeNote.classList.toggle('hidden', !accountBacked);
-  els.scopeNote.textContent = accountBacked ? `${t('dashboard.scope.accountOverview')}${staleNote}` : '';
+  const scopeNotes = [];
+  if (accountBacked) {
+    scopeNotes.push(t('dashboard.scope.accountOverview'));
+    if (account.coverageThrough) scopeNotes.push(t('usage.codexAccountActivity.coverage', { date: account.coverageThrough }));
+    if (account.fetchedAt) scopeNotes.push(t('usage.codexAccountActivity.lastRead', {
+      date: new Date(account.fetchedAt).toLocaleString(state.locale)
+    }));
+    if (account.status === 'stale') scopeNotes.push(t('dashboard.scope.stale'));
+    if (account.status === 'conflict') scopeNotes.push(t('usage.codexAccountActivity.conflict'));
+  }
+  els.scopeNote.textContent = scopeNotes.join(' ');
   els.heatmapScope.textContent = accountBacked ? t(heatmapScopeKey) : '';
   const daily = charts.computeHeatmapIntensities(state.history?.daily || []);
   const end = todayKey();

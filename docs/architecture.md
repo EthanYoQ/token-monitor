@@ -35,6 +35,7 @@ Only the app, agent and packaging scripts run `ensure:tokscale`, which installs 
 - **Project identity is ours.** Only a decoded path counts, hashed by `projectIdentity()`; an opaque workspace key is left for the resolvers, since hashing it would mint a second identity for a directory other clients name correctly.
 - **Defensive extraction.** `src/shared/usage.js` deep-walks tokscale's JSON and never assumes a fixed layout.
 - **Targeted watch scans.** Changed paths map back to clients, and those partitions are scanned in one unioned `--today` scan. That makes the client id a partition key — see the partition invariants in `docs/providers/README.md`.
+- **Unavailable OCR source.** A failed Open Code Review read keeps its last complete runtime rows for live periods and reports failed collection. Healthy clients continue daily archive capture and normal full-scan scheduling. Archive writes retain earlier OCR observations for the same date and exclude new OCR observations until a successful read. A mixed live snapshot preserves known client components and marks unresolved shared-model components unclassified. The collector keeps the last complete persisted anchor until OCR succeeds.
 
 ### Watching
 

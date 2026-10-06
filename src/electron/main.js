@@ -266,7 +266,7 @@ const {
   fetchMimoLimits,
   normalizeMimoCookieHeader
 } = require('../shared/providers/mimo/limits');
-const { deviceHistoryRevision, historyPreview, historyRevision } = require('../shared/history');
+const { deviceHistoryRevision, historyPreview, historyRevision, localDayKey } = require('../shared/history');
 const { completeHistorySource, resolveCompleteHistory, resolveCompleteHistoryWithDevices } = require('./historySource');
 const { fixedPeriodHistoryMeta } = require('./fixedPeriodHistory');
 const { readSessionDetailForPlatform } = require('../shared/sessionDetailResolver');
@@ -2862,6 +2862,13 @@ const codexAccountActivity = createCodexAccountActivity({
   onError: (error) => console.warn(`[codex-account-activity] ${error.message}`),
   onConflict: () => console.warn('[codex-account-activity] newer account total is lower; retaining the verified snapshot')
 });
+
+function configureCodexAccountActivity() {
+  codexAccountActivity.configure({
+    enabled: settings?.codexAccountActivityEnabled === true,
+    selected: String(settings?.clients || '').split(',').includes('codex')
+  });
+}
 let macWidgetSnapshotController = null;
 let macWidgetDemand = null;
 let macWidgetPublicationReady = false;
@@ -2892,13 +2899,16 @@ function electronPresentationStats(stats) {
   const codexSelected = String(settings?.clients || '').split(',').includes('codex');
   const snapshot = settings?.codexAccountActivityEnabled === true && codexSelected ? codexAccountActivity.snapshot() : null;
   const singleCodexAccount = snapshot ? !codexAccountActivity.multipleAccounts() : true;
-  const snapshotStale = snapshot ? isAccountActivityStale(snapshot) : false;
+  const nowMs = Date.now();
+  const selectedDate = snapshot ? localDayKey(new Date(nowMs)) : null;
+  const snapshotStale = snapshot ? isAccountActivityStale(snapshot, nowMs) : false;
   const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null, settings?.allTimeSince,
     settings?.codexAccountActivityEnabled, snapshot?.fetchedAt, snapshot?.lifetimeTokens,
-    snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale]);
+    snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale,
+    selectedDate, selectedDate?.slice(0, 7)]);
   return presentationCache.get(stats, key, () => projectModelAliasStats(
     projectLimitStatsForDisplay(snapshot
-      ? applyAccountActivityToStats(stats, snapshot, settings?.allTimeSince, settings?.deviceId, singleCodexAccount)
+      ? applyAccountActivityToStats(stats, snapshot, settings?.allTimeSince, settings?.deviceId, singleCodexAccount, nowMs)
       : stats, limitOptions),
     aliases,
     { grouping }
@@ -4220,7 +4230,6 @@ function sendPush(payload, options = {}) {
     latestStats = payload.data.stats;
     if (String(settings?.clients || '').split(',').includes('codex')) {
       codexAccountActivity.observe();
-      if (settings?.codexAccountActivityEnabled === true) void codexAccountActivity.refresh();
     }
     const visibleStats = electronPresentationStats(latestStats);
     rendererPayload = {
@@ -6708,6 +6717,7 @@ function rebuildWindow() {
 app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) app.dock.setIcon(APP_ICON_PATH);
   ensureSettingsLoaded();
+  configureCodexAccountActivity();
   // Switching the OS between light and dark repaints the taskbar underneath an
   // icon we have already handed to the shell, so the renderer has to recompose
   // it — nothing else in the app would notice the change.
@@ -7158,9 +7168,10 @@ app.whenReady().then(() => {
       // therefore may not send another frame after this local-only setting changes.
       refreshLimitStatsPresentation();
     }
-    if (settings.codexAccountActivityEnabled !== previousRuntimeSettings.codexAccountActivityEnabled) {
+    configureCodexAccountActivity();
+    if (settings.codexAccountActivityEnabled !== previousRuntimeSettings.codexAccountActivityEnabled
+      || settings.clients !== previousRuntimeSettings.clients) {
       refreshLimitStatsPresentation();
-      if (settings.codexAccountActivityEnabled) void codexAccountActivity.refresh();
       if (dashboardWindow && !dashboardWindow.isDestroyed()) {
         try { dashboardWindow.webContents.send('dashboard:historyChanged'); } catch (_) {}
       }
@@ -7296,7 +7307,10 @@ app.whenReady().then(() => {
     return true;
   });
   ipcMain.handle('stats:get', async (_event, options) => {
-    const stats = await fetchStats(options);
+    const [stats] = await Promise.all([
+      fetchStats(options),
+      options?.forceHistory === true ? codexAccountActivity.refresh({ force: true }) : null
+    ]);
     // The stream normally carries the stamp, but it is precisely when the stream
     // is down that this read is the only thing still arriving from the hub.
     maybeAdoptSharedSubscriptionRevision(stats);
@@ -8418,6 +8432,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 // OS-initiated logout or restart on macOS.
 app.on('before-quit', () => {
   quitRequested = true;
+  codexAccountActivity.dispose();
   antigravityOAuthLoginController?.abort();
   resetMacWidgetReloadThrottle();
   if (rateRefreshTimer) clearInterval(rateRefreshTimer);

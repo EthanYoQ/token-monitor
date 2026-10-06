@@ -229,6 +229,7 @@ function emptyPeriod() {
 function normalizeClientName(value) {
   const raw = normalizeTokscaleClientName(value);
   if (!raw) return null;
+  if (raw === 'ocr' || /^open[\s_-]*code[\s_-]*review$/.test(raw)) return 'open-code-review';
   if (raw.includes('claude')) return 'claude';
   if (raw.includes('codex')) return 'codex';
   if (raw.includes('hermes')) return 'hermes';

@@ -106,10 +106,13 @@ test('dashboard model percentages use the original grand total without account b
     formatCompact: String, t: (key) => key, applySwatchColors() {}
   });
   renderBreakdown();
-  assert.match(breakdown.innerHTML, /named[\s\S]*?40\.0%/);
+  assert.equal(breakdown.innerHTML.match(/dash-bd-pct">([^<]+)/)[1], '40.0%');
   state.history.codexAccountActivity = { status: 'applied' };
   renderBreakdown();
-  assert.match(breakdown.innerHTML, /named[\s\S]*?100\.0%/);
+  assert.equal(breakdown.innerHTML.match(/dash-bd-pct">([^<]+)/)[1], '100.0%');
+  state.history.codexAccountActivity = { status: 'conflict' };
+  renderBreakdown();
+  assert.equal(breakdown.innerHTML.match(/dash-bd-pct">([^<]+)/)[1], '100.0%');
 });
 
 test('account-backed overview labels local-only cards and both heatmap scopes', () => {
@@ -130,7 +133,8 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
     },
     todayKey: () => '2026-09-28', monthLabel: () => '', prefersReducedMotion: () => true,
     animateHeatmapEntry() {}, balanceStatCards() {}, renderBreakdown() {},
-    t: (key) => key, formatDurationCompact: () => '', formatCompact: () => '', formatCostCompact: () => ''
+    t: (key, params) => params?.date ? `${key}: ${params.date}` : key,
+    formatDurationCompact: () => '', formatCompact: () => '', formatCostCompact: () => ''
   });
   renderActivity();
   assert.match(cards.innerHTML, /trends\.activeTime.*dashboard\.scope\.local/);
@@ -139,6 +143,21 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
   state.heatmapMetric = 'cost';
   renderActivity();
   assert.equal(heatmapScope.textContent, 'dashboard.scope.localHeatmap');
+  state.history.codexAccountActivity = {
+    status: 'stale', coverageThrough: '2026-10-05', fetchedAt: '2026-10-06T03:32:53.294Z'
+  };
+  renderActivity();
+  assert.match(scopeNote.textContent, /usage\.codexAccountActivity\.coverage: 2026-10-05/);
+  assert.ok(scopeNote.textContent.includes(`usage.codexAccountActivity.lastRead: ${new Date('2026-10-06T03:32:53.294Z').toLocaleString(state.locale)}`));
+  assert.match(scopeNote.textContent, /dashboard\.scope\.stale/);
+  state.history.codexAccountActivity.status = 'conflict';
+  renderActivity();
+  assert.match(scopeNote.textContent, /usage\.codexAccountActivity\.conflict/);
+  assert.match(cards.innerHTML, /trends\.activeTime.*dashboard\.scope\.local/);
+  assert.equal(heatmapScope.textContent, 'dashboard.scope.localHeatmap');
+  delete state.history.codexAccountActivity;
+  renderActivity();
+  assert.equal(scopeNote.textContent, '');
 });
 
 test('fixed ranges request existing per-device History without changing ingest', () => {

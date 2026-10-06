@@ -17,6 +17,8 @@ const SOURCE_ENV_KEYS = Object.freeze([
   // be cleared like the rest of this list.
   'HOME',
   'USERPROFILE',
+  'APPDATA',
+  'LOCALAPPDATA',
   'XDG_DATA_HOME',
   'COPILOT_OTEL_FILE_EXPORTER_PATH',
   'CODEX_HOME',
