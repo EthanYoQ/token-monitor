@@ -9,7 +9,7 @@ const { sharedDataDir } = require('../../config');
 const { localDayKey } = require('../../history');
 
 const CLIENT = 'open-code-review';
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const MAX_LINE_BYTES = 32 * 1024 * 1024;
 const MAX_CACHE_BYTES = 64 * 1024 * 1024;
 const MAX_FILE_ROWS = 200_000;
@@ -177,8 +177,10 @@ async function loadCache(cachePath) {
   try {
     const stat = await fs.promises.stat(cachePath);
     if (stat.size > MAX_CACHE_BYTES) throw budgetError('numeric cache');
-    const value = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
-    return value.version === CACHE_VERSION && Array.isArray(value.rows) && value.rows.length <= MAX_FILE_ROWS
+    const stored = JSON.parse(await fs.promises.readFile(cachePath, 'utf8'));
+    if (stored?.version !== CACHE_VERSION) return null;
+    const { checksum, ...value } = stored;
+    return checksum === digest(JSON.stringify(value)) && Array.isArray(value.rows) && value.rows.length <= MAX_FILE_ROWS
       && Number.isSafeInteger(value.offset) && value.offset >= 0 && value.rows.every((row) => (
         row && typeof row.uuid === 'string' && row.uuid && typeof row.sessionId === 'string'
         && typeof row.model === 'string' && Number.isFinite(row.createdAt)
@@ -192,7 +194,7 @@ async function loadCache(cachePath) {
 }
 
 async function saveCache(cachePath, value, signal) {
-  const json = JSON.stringify(value);
+  const json = JSON.stringify({ ...value, checksum: digest(JSON.stringify(value)) });
   if (Buffer.byteLength(json) > MAX_CACHE_BYTES) throw budgetError('numeric cache');
   throwIfAborted(signal);
   await fs.promises.mkdir(path.dirname(cachePath), { recursive: true });

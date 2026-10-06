@@ -49,6 +49,46 @@ test('OCR checkpoints complete lines and reads an appended partial event exactly
   assert.equal(total(await collectOpenCodeReviewRows(f)), 240);
 });
 
+test('OCR rebuilds corrupted numeric caches from unchanged sources and then reuses the repaired cache', async (t) => {
+  for (const [name, corrupt] of [
+    ['changed token count', (cache) => { cache.rows[0].output += 1; }],
+    ['dropped row', (cache) => { cache.rows.pop(); }],
+    ['changed complete-line offset', (cache) => { cache.offset -= 1; }],
+    ['legacy cache version', (cache) => { cache.version = 2; delete cache.checksum; }]
+  ]) await t.test(name, async (t) => {
+    const f = fixture(t);
+    const source = ['a', 'b', 'c'].map((uuid) => line(event(uuid))).join('');
+    fs.writeFileSync(f.file, source);
+    assert.equal(total(await collectOpenCodeReviewRows(f)), 360);
+    const cachePath = path.join(f.cacheDir, fs.readdirSync(f.cacheDir)[0]);
+    const cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    corrupt(cache);
+    fs.writeFileSync(cachePath, JSON.stringify(cache));
+    const originalOpen = fs.promises.open;
+    let sourceBytes = 0;
+    fs.promises.open = async (filePath, ...args) => {
+      const handle = await originalOpen(filePath, ...args);
+      if (filePath === f.file) {
+        const createStream = handle.createReadStream.bind(handle);
+        handle.createReadStream = (options) => {
+          const stream = createStream(options);
+          stream.on('data', (chunk) => { sourceBytes += chunk.length; });
+          return stream;
+        };
+      }
+      return handle;
+    };
+    t.after(() => { fs.promises.open = originalOpen; });
+    const recovered = await collectOpenCodeReviewRows(f);
+    assert.equal(total(recovered), 360);
+    assert.deepEqual(recovered.map((row) => row.uuid), ['a', 'b', 'c']);
+    assert.equal(sourceBytes, Buffer.byteLength(source), 'a corrupt cache must rebuild from its complete source');
+    sourceBytes = 0;
+    assert.deepEqual(await collectOpenCodeReviewRows(f), recovered);
+    assert.equal(sourceBytes, 0, 'the repaired cache must retain the unchanged-source fast path');
+  });
+});
+
 test('OCR skips unchanged source bytes, resumes at the checkpoint, and cancels an active stream', async (t) => {
   const f = fixture(t);
   const first = line(event('a'));
