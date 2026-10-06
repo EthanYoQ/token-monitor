@@ -36,7 +36,7 @@ An explicit `[1m]` model marker, supported native Claude 1M model ids and recogn
 3. the authenticated Claude CLI usage screen as a fallback only for not-configured, rate-limited, unavailable or generic OAuth failures;
 4. on Windows with no readable OAuth credentials, a recent `Claude/plan-usage-history.json` sample from the Claude desktop app when the CLI fallback cannot provide a usage screen.
 
-The desktop sample contains five-hour and weekly utilization percentages, but no reset timestamps or plan label. It is accepted only within two hours of collection and keyed by its organization id; an absent, malformed or stale sample leaves the original provider error intact. This path reads no desktop credentials and does not infer a quota from CC-Switch traffic.
+The desktop sample contains five-hour and weekly utilization percentages, but no reset timestamps or plan label. Its organization id does not prove account identity, so it leaves `accountKey` empty. With fresh OAuth or Web quota, aggregation shows the configured account without a duplicate desktop row. It is accepted only within two hours of collection. An absent, malformed or stale sample leaves the original provider error intact. This path reads no desktop credentials and does not infer a quota from CC-Switch traffic.
 
 An identity-resolution failure after successful OAuth quota is not allowed to fall through and mint a differently keyed CLI row. The limits runtime retains the previous stable account instead.
 

@@ -1393,7 +1393,6 @@ async function readClaudeDesktopUsage(deps = {}, nowMs = Date.now()) {
   if (windows.length === 0) return null;
   return normalizeLimitProvider({
     provider: 'claude',
-    accountKey: hashKey('claude-account', `organization:${sample.org}`),
     source: 'local',
     sourceDetail: 'app',
     status: 'ok',

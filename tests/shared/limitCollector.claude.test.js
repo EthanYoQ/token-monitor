@@ -9,6 +9,7 @@ const test = require('node:test');
 
 const { claudeCommandCandidates, claudeWebCookie, fetchClaudeLimits, mapClaudeCliUsageToProvider, mapClaudeUsageToProvider, normalizeClaudeWebCookieInput } = require('../../src/shared/limits/collector');
 const { runClaudeAuthStatus, touchClaudeAuthPath } = require('../../src/shared/providers/claude/limits');
+const { aggregateLimits } = require('../../src/shared/limits/core');
 
 function fakeSpawnForClaudeUsage(expectedCommand = 'cmd.exe') {
   return (command, args, options) => {
@@ -90,7 +91,7 @@ test('Claude Web accepts only a bare or canonical sk-ant sessionKey', () => {
   assert.equal(normalizeClaudeWebCookieInput(''), '');
 });
 
-test('Windows Claude Desktop usage snapshot supplies limits when CLI login has no readable OAuth file', async () => {
+test('Windows Claude Desktop snapshot supplies unassigned limits and yields to configured OAuth accounts', async () => {
   const now = Date.parse('2026-09-28T02:30:00Z');
   const provider = await fetchClaudeLimits({}, {
     platform: 'win32',
@@ -112,6 +113,28 @@ test('Windows Claude Desktop usage snapshot supplies limits when CLI login has n
   assert.deepEqual(provider.windows.map(({ kind, usedPercent }) => ({ kind, usedPercent })), [
     { kind: 'session', usedPercent: 99 }, { kind: 'weekly', usedPercent: 27 }
   ]);
+
+  const oauth = await fetchClaudeLimits({}, {
+    platform: 'linux',
+    env: { CLAUDE_CODE_OAUTH_TOKEN: 'test-token' },
+    now: () => now,
+    fetch: fakeClaudeOauthFetch({ five_hour: { utilization: 42 } }, {
+      ...DEFAULT_CLAUDE_PROFILE,
+      organization: { uuid: 'org-one' }
+    })
+  });
+  const desktopDevice = { deviceId: 'desktop', limits: { providers: [provider] } };
+  const combined = aggregateLimits([
+    desktopDevice,
+    { deviceId: 'oauth', limits: { providers: [oauth] } }
+  ], 0, now);
+  assert.equal(combined.providers.length, 1);
+  assert.equal(combined.providers[0].accountKey, oauth.accountKey);
+  assert.equal(combined.providers[0].windows[0].usedPercent, 42);
+  assert.equal(provider.accountKey, '');
+  const desktopOnly = aggregateLimits([desktopDevice], 0, now);
+  assert.equal(desktopOnly.providers.length, 1);
+  assert.equal(desktopOnly.providers[0].windows[0].usedPercent, 99);
 });
 
 test('Windows Claude Desktop snapshot rejects stale and malformed usage', async () => {
