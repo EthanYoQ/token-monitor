@@ -22,10 +22,15 @@ function displayFor(bounds, displays) {
 
 function exposed(display, displays, side, bounds) {
   const outer = display.bounds;
+  const area = display.workArea;
   const vertical = side === 'left' || side === 'right';
   const boundary = vertical
     ? (side === 'left' ? outer.x : outer.x + outer.width)
     : (side === 'top' ? outer.y : outer.y + outer.height);
+  const workBoundary = vertical
+    ? (side === 'left' ? area.x : area.x + area.width)
+    : (side === 'top' ? area.y : area.y + area.height);
+  if (workBoundary !== boundary) return false;
   return !displays.some((other) => {
     if (other === display || other.id === display.id) return false;
     const rect = other.bounds;
@@ -309,16 +314,20 @@ function createMainWindowAutoHide(options) {
     }, 0);
   }
 
+  function overRevealStrip(point) {
+    return pointInside(point, win.getBounds()) && pointInside(point, display.workArea);
+  }
+
   function tick() {
     if (!side || disposed) return;
     if (win.isMinimized()) { clearIntent(); return; }
     if (!eligible() || !win.isVisible()) { if (!eligible()) release(true); return; }
     const cursor = screen.getCursorScreenPoint();
     if (hidden) {
-      if (pointInside(cursor, win.getBounds()) && !fullscreen(display)) {
+      if (overRevealStrip(cursor) && !fullscreen(display)) {
         if (!intentTimer) intentTimer = setTimeoutFn(() => {
           intentTimer = null;
-          if (side && eligible() && pointInside(screen.getCursorScreenPoint(), win.getBounds()) && !fullscreen(display)) reveal();
+          if (side && eligible() && overRevealStrip(screen.getCursorScreenPoint()) && !fullscreen(display)) reveal();
         }, 150);
       } else clearIntent();
       return;
