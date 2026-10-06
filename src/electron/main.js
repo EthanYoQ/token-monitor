@@ -25,6 +25,8 @@ const fontSettingsApi = require('../shared/fontSettings');
 const motionPreferenceApi = require('./motionPreference');
 const { clearBackgroundImage, getBackgroundImage, importBackgroundImage } = require('./backgroundImage');
 const { createClientSourceIpcHandlers } = require('./clientSourceIpc');
+const { createCodexAccountActivity } = require('./codexAccountActivity');
+const { applyAccountActivityToStats, projectAccountActivityToHistory, isAccountActivityStale } = require('../shared/providers/codex/accountActivity');
 const { createClaudeWebFetch } = require('./providers/claude/webFetch');
 const { runAntigravityOAuthLogin } = require('./providers/antigravity/oauthLogin');
 const antigravityOAuth = require('../shared/providers/antigravity/oauth');
@@ -91,7 +93,8 @@ const { deviceRecordFromAnchor } = require('../shared/anchorSeed');
 const { sendWhenRendererReady } = require('./deferredWindowSend');
 const { actionWindowForEvent, handoffWindow, showWindow } = require('./windowLifecycle');
 const { applyInitialLimitProviderSeed } = require('./initialLimitProviderSeed');
-const { createDeviceRuntime } = require('../shared/deviceRuntime');
+const { createDeviceRuntime } = require('../shared/usage/deviceRuntime');
+const { externalAgentActive } = require('../shared/usage/agentPid');
 const { createDiagnosticJournal } = require('../shared/diagnosticJournal');
 const { createDiagnosticReportGenerator } = require('./diagnostics');
 const { createDiagnosticSnapshotBuilder, diagnosticStreamDetailCode, selectLocalDeviceRecord } = require('./diagnosticSnapshot');
@@ -235,23 +238,19 @@ const { normalizeCurrency, resolveEffectiveRates, configureRates } = require('..
 const { normalizeCompactTokenUnits } = require('../shared/compactTokens');
 const { fetchRates, isCacheStale } = require('../shared/exchangeRates');
 const {
-  applyArchivedClientUsage,
   captureArchivedClientUsage,
   normalizeArchivedClientUsage,
   pruneArchivedClientUsage
-} = require('../shared/clientUsageArchive');
-const {
-  applySessionUsageArchive,
-  normalizeSessionUsageArchive,
-  sessionUsageArchiveDate
-} = require('../shared/sessionUsageArchive');
+} = require('../shared/usage/clientUsageArchive');
+const { sessionUsageArchiveDate } = require('../shared/usage/sessionUsageArchive');
 const {
   createSessionUsageArchiveStore,
-  readSessionUsageArchiveSnapshot,
   sessionUsageArchiveDatabasePath
-} = require('../shared/sessionUsageArchiveStore');
+} = require('../shared/usage/sessionUsageArchiveStore');
+const { createUsageTransform, usageTransformSettings } = require('../shared/usage/usageTransform');
+const { createUsageHost, terminateUsageHostSubprocesses, whenUsageHostsIdle } = require('../shared/usage/usageHost');
 const { clearDailyHistoryArchive } = require('../shared/dailyHistoryArchive');
-const { aggregateDevices, aggregateHistory, applyProjectRollups } = require('../shared/usage');
+const { aggregateDevices, aggregateHistory } = require('../shared/usage');
 const {
   HUB_RESPONSE_HEADER,
   HUB_RESPONSE_MINIMAL,
@@ -324,6 +323,7 @@ const {
   attachLocalNativeViews,
   attachLocalPresentationNativeViews,
   completeLocalSyncStats,
+  composeLocalOnlySummary,
   composeLocalSyncSummary
 } = require('./syncDisplayStats');
 const {
@@ -494,13 +494,7 @@ let persistedSettingsSnapshot = null;
 let credentialStore = null;
 let credentialStorageErrorShown = false;
 let antigravityOAuthLoginController = null;
-let sessionUsageArchive = null;
 const sessionUsageArchiveStore = createSessionUsageArchiveStore({ cursorUsageEvents: createCursorUsageEventIndex() });
-let lastSessionUsageArchiveUpdate = {
-  at: null,
-  durationMs: null,
-  failureCode: null
-};
 let rendererViewState = normalizeInitialRendererViewState();
 const serviceStatusClient = createServiceStatusClient();
 const codexResetForecastClient = createCodexResetForecastClient({
@@ -606,6 +600,7 @@ function defaultSettings() {
     showHomeLimitProviderNames: false,
     projectsEnabled: parseBoolean(process.env.TOKEN_MONITOR_PROJECTS_ENABLED, true),
     historyEnabled: true,
+    codexAccountActivityEnabled: false,
     historyIntervalMs: normalizeHistoryIntervalMs(process.env.TOKEN_MONITOR_HISTORY_INTERVAL_MS),
     sessionUsageArchiveEnabled: parseBoolean(process.env.TOKEN_MONITOR_SESSION_USAGE_ARCHIVE_ENABLED, true),
     wslScanEnabled: parseBoolean(process.env.TOKEN_MONITOR_WSL_SCAN, true),
@@ -773,6 +768,7 @@ function electronUsageConfig(errorPrefix) {
     watchTriggersCollection: collectorWatchTriggersCollection(),
     intervalRequiresActivity: collectorIntervalRequiresActivity(),
     watchDebounceMs: 1500,
+    ccSwitchClaudeEnabled: process.platform === 'win32' && parseBoolean(process.env.TOKEN_MONITOR_CC_SWITCH_CLAUDE, false),
     dailyHistoryArchiveWriteEnabled: () => !isExternalAgentActive(),
     onError: (error, reason) => console.log(`[${errorPrefix}] ${reason}: ${error.message}`),
     logger: (message) => console.log(`[${errorPrefix}] ${message}`)
@@ -1789,8 +1785,10 @@ async function switchCodexSystemAccount(id) {
   }
   codexSystemSwitchInFlight = true;
   try {
+    codexAccountActivity.observe();
     const result = await performCodexSystemAccountSwitch(id);
     if (result?.ok) {
+      codexAccountActivity.observe();
       // Publish the optimistic selection from the shared lane so the App,
       // Edge Dock and tray agree immediately regardless of which one initiated
       // the switch. Quota data catches up through one targeted refresh below.
@@ -2478,6 +2476,7 @@ function readSettings() {
     if (saved.historyEnabled !== undefined) {
       merged.historyEnabled = parseBoolean(saved.historyEnabled, false);
     }
+    merged.codexAccountActivityEnabled = parseBoolean(merged.codexAccountActivityEnabled, false);
     if (saved.projectsEnabled !== undefined) {
       merged.projectsEnabled = parseBoolean(saved.projectsEnabled, true);
     }
@@ -2664,77 +2663,24 @@ function updateArchivedClientUsage(previousClients, nextClients) {
   settings.archivedClientUsage = archive;
 }
 
-function ensureSessionUsageArchiveLoaded() {
-  if (sessionUsageArchive) return sessionUsageArchive;
-  try {
-    // The headless agent owns migration and pruning while its PID is active.
-    // Anchor projection must not turn Electron into a second archive writer.
-    sessionUsageArchive = isExternalAgentActive()
-      ? readSessionUsageArchiveSnapshot()
-      : sessionUsageArchiveStore.read();
-  } catch (error) {
-    console.log(`[session-archive] read failed: ${error.message}`);
-    sessionUsageArchive = normalizeSessionUsageArchive({});
-  }
-  return sessionUsageArchive;
-}
+const usageTransform = createUsageTransform({
+  store: sessionUsageArchiveStore,
+  getSettings: () => settings,
+  isExternalAgentActive,
+  onCaptureFailure: () => diagnosticJournal.record({ subsystem: 'storage', code: 'storage-archive-update-failed' })
+});
 
-function updateSessionUsageArchive(summary, now) {
-  const startedAt = Date.now();
-  const finish = (failureCode = null) => {
-    lastSessionUsageArchiveUpdate = {
-      at: new Date().toISOString(),
-      durationMs: Math.max(0, Date.now() - startedAt),
-      failureCode
-    };
-  };
-  try {
-    const result = sessionUsageArchiveStore.capture(summary, now);
-    sessionUsageArchive = result.archive;
-    if (result.error) throw result.error;
-  } catch (error) {
-    finish('archive-write-failed');
-    diagnosticJournal.record({ subsystem: 'storage', code: 'storage-archive-update-failed' });
-    console.log(`[session-archive] write failed: ${error.message}`);
-    return sessionUsageArchive || ensureSessionUsageArchiveLoaded();
-  }
-  finish();
-  return sessionUsageArchive;
-}
-
-// Read-only projection of both archives onto a summary. Un-tracked clients and
-// retained sessions add to the period totals, not just to the breakdowns, so
-// anything rendered without this reads low. Takes the session archive as an
-// argument because capturing into it is a separate decision, see below.
-function summaryWithArchivesApplied(summary, sessionArchive, now) {
-  const withArchivedClients = applyArchivedClientUsage(summary, settings?.archivedClientUsage, {
-    activeClients: settings?.clients,
-    now
+// The usage runtime every device runtime starts. Collection and the transform
+// run on a worker thread (usageHost.js) and summaries arrive transformed. With
+// TOKEN_MONITOR_USAGE_WORKER=0, or once the worker has failed, it is the
+// in-process collector and `usageTransform` above runs on this thread.
+let latestUsageHost = null;
+function createElectronUsageRuntime(options) {
+  latestUsageHost = createUsageHost(options, {
+    agentPidPath: AGENT_PID_PATH,
+    transformSettings: usageTransformSettings(settings)
   });
-  const visibleSummary = settings?.sessionUsageArchiveEnabled === false
-    ? withArchivedClients
-    : applySessionUsageArchive(withArchivedClients, sessionArchive, {
-        now,
-        canonical: true,
-        canonicalSummary: true,
-        mutate: true
-      });
-  return settings?.projectsEnabled === false ? visibleSummary : applyProjectRollups(visibleSummary);
-}
-
-function summaryWithArchivedClientUsage(summary) {
-  const now = sessionUsageArchiveDate(summary);
-  if (settings?.sessionUsageArchiveEnabled === false) return summaryWithArchivesApplied(summary, null, now);
-  if (isExternalAgentActive()) {
-    try {
-      sessionUsageArchive = sessionUsageArchiveStore.refresh(now);
-    } catch (error) {
-      console.log(`[session-archive] refresh failed: ${error.message}`);
-      sessionUsageArchive = sessionUsageArchive || normalizeSessionUsageArchive({});
-    }
-    return summaryWithArchivesApplied(summary, sessionUsageArchive, now);
-  }
-  return summaryWithArchivesApplied(summary, updateSessionUsageArchive(summary, now), now);
+  return latestUsageHost;
 }
 
 function applyMacActivationPolicy(state = {}) {
@@ -2906,6 +2852,16 @@ let latestHubStatsIdentity = null;
 let hubModeGeneration = 0;
 let tray = null;
 let latestStats = null;
+const codexAccountActivity = createCodexAccountActivity({
+  onChange: () => {
+    if (latestStats) sendPush({ event: 'stats', data: { type: 'stats', reason: 'presentation', stats: latestStats, at: new Date().toISOString() } }, { skipExport: true });
+    if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+      try { dashboardWindow.webContents.send('dashboard:historyChanged'); } catch (_) {}
+    }
+  },
+  onError: (error) => console.warn(`[codex-account-activity] ${error.message}`),
+  onConflict: () => console.warn('[codex-account-activity] newer account total is lower; retaining the verified snapshot')
+});
 let macWidgetSnapshotController = null;
 let macWidgetDemand = null;
 let macWidgetPublicationReady = false;
@@ -2933,9 +2889,17 @@ function electronPresentationStats(stats) {
   };
   const aliases = settings?.modelAliases;
   const grouping = settings?.modelAliasGrouping;
-  const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null]);
+  const codexSelected = String(settings?.clients || '').split(',').includes('codex');
+  const snapshot = settings?.codexAccountActivityEnabled === true && codexSelected ? codexAccountActivity.snapshot() : null;
+  const singleCodexAccount = snapshot ? !codexAccountActivity.multipleAccounts() : true;
+  const snapshotStale = snapshot ? isAccountActivityStale(snapshot) : false;
+  const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null, settings?.allTimeSince,
+    settings?.codexAccountActivityEnabled, snapshot?.fetchedAt, snapshot?.lifetimeTokens,
+    snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale]);
   return presentationCache.get(stats, key, () => projectModelAliasStats(
-    projectLimitStatsForDisplay(stats, limitOptions),
+    projectLimitStatsForDisplay(snapshot
+      ? applyAccountActivityToStats(stats, snapshot, settings?.allTimeSince, settings?.deviceId, singleCodexAccount)
+      : stats, limitOptions),
     aliases,
     { grouping }
   ));
@@ -2954,6 +2918,7 @@ const snapshotLocalDevices = new WeakMap();
 // machine's own full all-time list as it stood when the snapshot was built.
 function rendererAllTimeSessions(stats) {
   if (!stats) return null;
+  if (electronPresentationStats(stats).codexAccountActivity?.detailsSuppressed) return {};
   const aliases = settings?.modelAliases;
   const grouping = settings?.modelAliasGrouping;
   const key = JSON.stringify([aliases ?? null, grouping ?? null]);
@@ -3075,13 +3040,13 @@ const diagnosticSnapshotBuilder = createDiagnosticSnapshotBuilder({
   getJournalSnapshot: () => diagnosticJournal.getSnapshot(),
   getArchiveState: () => {
     const enabled = settings?.sessionUsageArchiveEnabled !== false;
-    const loaded = sessionUsageArchive !== null;
+    const { loaded, sessionCount, lastUpdate } = latestUsageHost?.getArchiveState?.() || usageTransform.getState();
     return {
       enabled,
       loaded,
-      sessionCount: loaded ? Object.keys(sessionUsageArchive?.sessions || {}).length : null,
+      sessionCount,
       countSource: loaded ? 'loaded-memory' : enabled ? 'not-loaded' : 'not-enabled',
-      lastUpdate: lastSessionUsageArchiveUpdate
+      lastUpdate
     };
   },
   getAppVersion: appVersion,
@@ -3285,13 +3250,7 @@ async function stopEmbeddedHub() {
 }
 
 function isExternalAgentActive() {
-  try {
-    const raw = fs.readFileSync(AGENT_PID_PATH, 'utf8').trim();
-    const pid = parseInt(raw, 10);
-    if (!pid || pid === process.pid) return false;
-    process.kill(pid, 0);
-    return true;
-  } catch (_) { return false; }
+  return externalAgentActive(AGENT_PID_PATH);
 }
 
 function ownsUsageRuntime() {
@@ -3888,7 +3847,7 @@ function startSyncCollector() {
   const sink = {
     async enqueue(summary, revision) {
       seedInitialLimitProviders(summary);
-      if (isExternalAgentActive()) { sessionUsageArchive = null; return; }
+      if (isExternalAgentActive()) { usageTransform.forget(); return; }
       const visibleSummary = {
         ...summary,
         syncUploadIntervalMs: syncUploadIntervalMs()
@@ -3910,12 +3869,13 @@ function startSyncCollector() {
     envelope: electronDeviceEnvelope(),
     initialLimits: lastCollectedDevice?.limits,
     limitsOptions: electronLimitsConfig(),
-    transformUsage: summaryWithArchivedClientUsage,
+    transformUsage: usageTransform.transform,
     usageOptions,
     sink,
     onDiagnosticEvent: recordDiagnosticEvent,
     onError: (error, reason) => console.log(`[sync-collector] ${reason}: ${error.message}`)
   }, {
+    createUsageRuntime: createElectronUsageRuntime,
     limitsDeps: electronLimitsDeps()
   });
   usageRuntimeReconciler.setActiveKey(usageConfigFingerprint(usageOptions));
@@ -3930,7 +3890,7 @@ function startHostCollector() {
   const sink = {
     enqueue(summary) {
       seedInitialLimitProviders(summary);
-      if (isExternalAgentActive()) { sessionUsageArchive = null; return; }
+      if (isExternalAgentActive()) { usageTransform.forget(); return; }
       const visibleSummary = summary;
       lastCollectedDevice = { ...visibleSummary, receivedAt: new Date().toISOString() };
       if (!embeddedHub) return;
@@ -3958,12 +3918,13 @@ function startHostCollector() {
     envelope: electronDeviceEnvelope(),
     initialLimits: lastCollectedDevice?.limits,
     limitsOptions: electronLimitsConfig(),
-    transformUsage: summaryWithArchivedClientUsage,
+    transformUsage: usageTransform.transform,
     usageOptions,
     sink,
     onDiagnosticEvent: recordDiagnosticEvent,
     onError: (error, reason) => console.log(`[host-collector] ${reason}: ${error.message}`)
   }, {
+    createUsageRuntime: createElectronUsageRuntime,
     limitsDeps: electronLimitsDeps()
   });
   usageRuntimeReconciler.setActiveKey(usageConfigFingerprint(usageOptions));
@@ -4257,6 +4218,10 @@ function sendPush(payload, options = {}) {
   if (payload?.data?.stats) {
     injectLocalDeviceStatus(payload.data.stats);
     latestStats = payload.data.stats;
+    if (String(settings?.clients || '').split(',').includes('codex')) {
+      codexAccountActivity.observe();
+      if (settings?.codexAccountActivityEnabled === true) void codexAccountActivity.refresh();
+    }
     const visibleStats = electronPresentationStats(latestStats);
     rendererPayload = {
       ...payload,
@@ -4446,6 +4411,8 @@ function primeLocalStatsFromAnchor(usageOptions, widgetProducerOwner) {
       allTimeSince: usageOptions.allTimeSince,
       projectsEnabled: usageOptions.projectsEnabled,
       customScanPaths: usageOptions.customScanPaths,
+      ccSwitchClaudeEnabled: usageOptions.ccSwitchClaudeEnabled,
+      ccSwitchDbPath: usageOptions.ccSwitchDbPath,
       wslScanEnabled: usageOptions.wslScanEnabled,
       wslSupported: process.platform === 'win32',
       hostname: os.hostname(),
@@ -4458,9 +4425,9 @@ function primeLocalStatsFromAnchor(usageOptions, widgetProducerOwner) {
   // reads low for anyone with an un-tracked client or retained sessions, and then
   // jumps when the first scan lands. Read-only on purpose: the capture step
   // records a fresh observation, and an anchor from hours ago is not one.
-  const visible = summaryWithArchivesApplied(
+  const visible = usageTransform.project(
     deviceRecord,
-    settings?.sessionUsageArchiveEnabled === false ? null : ensureSessionUsageArchiveLoaded(),
+    settings?.sessionUsageArchiveEnabled === false ? null : usageTransform.ensureLoaded(),
     sessionUsageArchiveDate(deviceRecord)
   );
   localDevice = visible;
@@ -4491,7 +4458,7 @@ function startLocalCollector() {
     envelope: electronDeviceEnvelope(),
     initialLimits: lastCollectedDevice?.limits,
     limitsOptions: electronLimitsConfig(),
-    transformUsage: summaryWithArchivedClientUsage,
+    transformUsage: usageTransform.transform,
     usageOptions,
     progressive: true,
     onRecord: (summary, meta) => {
@@ -4500,8 +4467,11 @@ function startLocalCollector() {
       const visibleSummary = summary;
       localDevice = { ...visibleSummary, receivedAt: new Date().toISOString() };
       lastCollectedDevice = localDevice;
-      localStats = withHistoryPreview(aggregateDevices([localDevice], 0), [localDevice]);
-      attachLocalNativeViews(localStats, localDevice);
+      localStats = composeLocalOnlySummary(localDevice, (stats) => {
+        withHistoryPreview(stats, [localDevice]);
+        attachLocalNativeViews(stats, localDevice);
+        return stats;
+      });
       updateDiscordRpcDisplay(localStats);
       sendPush({ event: 'stats', data: { type: 'stats', reason, stats: localStats, at: new Date().toISOString() } }, { widgetProducerOwner });
       sendStatus(true, { reason });
@@ -4509,6 +4479,7 @@ function startLocalCollector() {
     onDiagnosticEvent: recordDiagnosticEvent,
     onError: (error, reason) => sendStatus(false, { reason: `${reason}:${error.message}` })
   }, {
+    createUsageRuntime: createElectronUsageRuntime,
     limitsDeps: electronLimitsDeps()
   });
   usageRuntimeReconciler.setActiveKey(usageConfigFingerprint(usageOptions));
@@ -5662,6 +5633,10 @@ function stopAll() {
   stopStatsStream();
   stopHostStats();
   stopSyncCollector({ skipCloseWatchers: true });
+  // A collector on the usage worker stops by message, which nothing guarantees
+  // the worker handles before the exit below; its tokscale subprocesses would
+  // outlive us.
+  terminateUsageHostSubprocesses();
   syncStatsPublication.cancel();
   macWidgetSnapshotController?.stop();
   if (macWidgetDemand) {
@@ -6656,8 +6631,13 @@ async function getDashboardHistory(options = {}) {
     : { history: await getCompleteHistory(), deviceHistories: undefined };
   const history = resolved.history;
   const source = completeHistorySource(historyResolverOptions());
+  const accountSnapshot = settings?.historyEnabled !== false && settings?.codexAccountActivityEnabled === true && latestStats
+    ? codexAccountActivity.snapshot() : null;
+  const accountHistory = accountSnapshot
+    ? projectAccountActivityToHistory(history, accountSnapshot, electronPresentationStats(latestStats))
+    : history;
   return projectModelAliasHistory({
-    ...history,
+    ...accountHistory,
     ...(includeDevices ? { deviceHistories: resolved.deviceHistories } : {}),
     fixedPeriods: fixedPeriodHistoryMeta({
       source
@@ -6839,12 +6819,19 @@ app.whenReady().then(() => {
       throw new Error(subscriptionWriteFailureCode(error), { cause: error });
     }
   });
-  ipcMain.handle('sessionUsageArchive:clear', () => {
+  ipcMain.handle('sessionUsageArchive:clear', async () => {
     if (isExternalAgentActive()) return { ok: false, error: 'agentActive' };
+    // A worker-hosted collector writes both archives from its own thread, so it
+    // has to be gone before they are deleted or its next tick writes them back.
+    stopLocalCollector();
+    stopSyncCollector();
+    await whenUsageHostsIdle();
     try {
+      // The agent may have started while the worker was stopping.
+      if (isExternalAgentActive()) return { ok: false, error: 'agentActive' };
       sessionUsageArchiveStore.clear();
       clearDailyHistoryArchive();
-      sessionUsageArchive = normalizeSessionUsageArchive({});
+      usageTransform.reset();
       return { ok: true };
     } catch (error) {
       return { ok: false, error: error.message };
@@ -6865,7 +6852,14 @@ app.whenReady().then(() => {
     applySettingsPatch,
     probeDeps: credentialProbeDeps
   });
-  ipcMain.handle('settings:update', (_event, patch) => applySettingsPatch(patch));
+  // Resolves only once a worker-hosted transform runs with the saved settings:
+  // pausing the session archive must not be reported done while the worker can
+  // still capture under the old value.
+  ipcMain.handle('settings:update', async (_event, patch) => {
+    const result = applySettingsPatch(patch);
+    await latestUsageHost?.transformSettingsApplied?.();
+    return result;
+  });
   // The settings:update body, named so a credential save persists through the
   // exact same normalization, runtime reconfigure and limit invalidation.
   function applySettingsPatch(patch) {
@@ -7007,6 +7001,7 @@ app.whenReady().then(() => {
       modelRankingMetric: normalizeRankingMetric(patch.modelRankingMetric ?? settings.modelRankingMetric),
       sessionContextMetric: normalizeSessionContextMetric(patch.sessionContextMetric ?? settings.sessionContextMetric),
       historyEnabled: parseBoolean(patch.historyEnabled ?? settings.historyEnabled, false),
+      codexAccountActivityEnabled: parseBoolean(patch.codexAccountActivityEnabled ?? settings.codexAccountActivityEnabled, false),
       projectsEnabled: parseBoolean(patch.projectsEnabled ?? settings.projectsEnabled, true),
       historyIntervalMs: normalizeHistoryIntervalMs(patch.historyIntervalMs ?? settings.historyIntervalMs),
       sessionUsageArchiveEnabled: parseBoolean(patch.sessionUsageArchiveEnabled ?? settings.sessionUsageArchiveEnabled, true),
@@ -7060,6 +7055,10 @@ app.whenReady().then(() => {
       settings = previousSettingsState;
       throw error;
     }
+    // A worker-hosted transform holds its own copy of the settings it reads.
+    // Update it now rather than when the usage reconfigure settles: pausing the
+    // session archive must stop captures from the next summary on.
+    latestUsageHost?.updateTransformSettings?.(usageTransformSettings(settings));
     if (patch?.limitProviders !== undefined) initialLimitProvidersPending = false;
     if (JSON.stringify(settings.customModelPricing || []) !== previousCustomModelPricing) {
       regenerateTokscalePricing();
@@ -7158,6 +7157,13 @@ app.whenReady().then(() => {
       // Re-project the cached aggregate immediately. The Hub can be offline and
       // therefore may not send another frame after this local-only setting changes.
       refreshLimitStatsPresentation();
+    }
+    if (settings.codexAccountActivityEnabled !== previousRuntimeSettings.codexAccountActivityEnabled) {
+      refreshLimitStatsPresentation();
+      if (settings.codexAccountActivityEnabled) void codexAccountActivity.refresh();
+      if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+        try { dashboardWindow.webContents.send('dashboard:historyChanged'); } catch (_) {}
+      }
     }
     if (JSON.stringify(settings.modelAliases) !== JSON.stringify(previousSettingsState.modelAliases)
       || settings.modelAliasGrouping !== previousSettingsState.modelAliasGrouping) {

@@ -9,6 +9,7 @@ const test = require('node:test');
 
 const { claudeCommandCandidates, claudeWebCookie, fetchClaudeLimits, mapClaudeCliUsageToProvider, mapClaudeUsageToProvider, normalizeClaudeWebCookieInput } = require('../../src/shared/limits/collector');
 const { runClaudeAuthStatus, touchClaudeAuthPath } = require('../../src/shared/providers/claude/limits');
+const { aggregateLimits } = require('../../src/shared/limits/core');
 
 function fakeSpawnForClaudeUsage(expectedCommand = 'cmd.exe') {
   return (command, args, options) => {
@@ -88,6 +89,87 @@ test('Claude Web accepts only a bare or canonical sk-ant sessionKey', () => {
     (error) => error?.code === 'INVALID_CLAUDE_WEB_SESSION_KEY'
   );
   assert.equal(normalizeClaudeWebCookieInput(''), '');
+});
+
+test('Windows Claude Desktop snapshot supplies unassigned limits and yields to configured OAuth accounts', async () => {
+  const now = Date.parse('2026-09-28T02:30:00Z');
+  const provider = await fetchClaudeLimits({}, {
+    platform: 'win32',
+    env: { APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming' },
+    now: () => now,
+    stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+    readWindowsCredential: false,
+    isClaudeCliAuthenticated: async () => false,
+    readFile: async (file) => {
+      assert.match(file, /Claude[\\/]plan-usage-history\.json$/);
+      return JSON.stringify({ version: 1, samples: [
+        { t: now - 60_000, org: 'org-one', u: { fh: 99, sd: 27 } }
+      ] });
+    }
+  });
+  assert.equal(provider.status, 'ok');
+  assert.equal(provider.source, 'local');
+  assert.equal(provider.sourceDetail, 'app');
+  assert.deepEqual(provider.windows.map(({ kind, usedPercent }) => ({ kind, usedPercent })), [
+    { kind: 'session', usedPercent: 99 }, { kind: 'weekly', usedPercent: 27 }
+  ]);
+
+  const oauth = await fetchClaudeLimits({}, {
+    platform: 'linux',
+    env: { CLAUDE_CODE_OAUTH_TOKEN: 'test-token' },
+    now: () => now,
+    fetch: fakeClaudeOauthFetch({ five_hour: { utilization: 42 } }, {
+      ...DEFAULT_CLAUDE_PROFILE,
+      organization: { uuid: 'org-one' }
+    })
+  });
+  const desktopDevice = { deviceId: 'desktop', limits: { providers: [provider] } };
+  const combined = aggregateLimits([
+    desktopDevice,
+    { deviceId: 'oauth', limits: { providers: [oauth] } }
+  ], 0, now);
+  assert.equal(combined.providers.length, 1);
+  assert.equal(combined.providers[0].accountKey, oauth.accountKey);
+  assert.equal(combined.providers[0].windows[0].usedPercent, 42);
+  assert.equal(provider.accountKey, '');
+  const desktopOnly = aggregateLimits([desktopDevice], 0, now);
+  assert.equal(desktopOnly.providers.length, 1);
+  assert.equal(desktopOnly.providers[0].windows[0].usedPercent, 99);
+});
+
+test('Windows Claude Desktop snapshot rejects stale and malformed usage', async () => {
+  const now = Date.parse('2026-09-28T02:30:00Z');
+  for (const sample of [
+    { t: now - 3 * 60 * 60 * 1000, org: 'org-one', u: { fh: 99, sd: 27 } },
+    { t: now - 60_000, org: 'org-one', u: { fh: 199, sd: -3 } }
+  ]) {
+    await assert.rejects(fetchClaudeLimits({}, {
+      platform: 'win32', env: { APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming' },
+      now: () => now,
+      stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+      readWindowsCredential: false,
+      isClaudeCliAuthenticated: async () => false,
+      readFile: async () => JSON.stringify({ samples: [sample] })
+    }), (error) => error?.status === 'notConfigured');
+  }
+});
+
+test('Windows desktop snapshot cannot replace a configured OAuth account after an API failure', async () => {
+  let desktopRead = false;
+  await assert.rejects(fetchClaudeLimits({}, {
+    platform: 'win32',
+    env: { APPDATA: 'C:\\Users\\Tester\\AppData\\Roaming' },
+    readdirSync: () => [],
+    stat: async () => ({ mtimeMs: 1 }),
+    readWindowsCredential: false,
+    readFile: async (file) => {
+      if (file.includes('plan-usage-history')) desktopRead = true;
+      return JSON.stringify({ claudeAiOauth: { accessToken: 'test-token' } });
+    },
+    fetch: async () => ({ ok: false, status: 503 }),
+    isClaudeCliAuthenticated: async () => false
+  }), (error) => error?.status === 'unavailable');
+  assert.equal(desktopRead, false);
 });
 
 test('Claude Web source takes precedence and carries stable account metadata', async () => {
