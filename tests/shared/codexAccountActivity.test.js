@@ -41,6 +41,45 @@ function stats() {
   return { periods: { allTime, today, month: today } };
 }
 
+test('a synchronous account read failure does not prevent the next refresh', async () => {
+  const root = path.join(__dirname, '../../.runtime/.cache');
+  fs.mkdirSync(root, { recursive: true });
+  const dir = fs.mkdtempSync(path.join(root, 'codex-retry-test-'));
+  let reads = 0;
+  const reader = createCodexAccountActivity({
+    filePath: path.join(dir, 'activity.json'),
+    readIdentity: () => ({ accountKey: 'account-a' }),
+    readActivity: () => {
+      reads += 1;
+      if (reads === 1) throw new Error('temporary command resolution failure');
+      return activity();
+    }
+  });
+  try {
+    assert.equal(await reader.refresh({ force: true }), null);
+    const recovered = await reader.refresh({ force: true });
+    assert.equal(reads, 2);
+    assert.equal(recovered.lifetimeTokens, 67_570);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Home Day and Month replace Codex with the named account date buckets', () => {
+  const raw = activity(1_000, '2026-09-26');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-26', tokens: 700 },
+    { startDate: '2026-09-27', tokens: 300 }
+  ];
+  const original = stats();
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const shown = applyAccountActivityToStats(original, snapshot, '2024-01-01');
+  assert.equal(shown.periods.today.clients.codex, 300);
+  assert.equal(shown.periods.month.clients.codex, 1_000);
+  assert.equal(shown.periods.allTime.clients.codex, 1_000);
+  assert.equal(original.periods.today.clients.codex, 100);
+});
+
 test('account total replaces local Codex without summing the two sources or changing local dates', () => {
   const original = stats();
   const snapshot = normalizeAccountActivity(activity(), 'account-a');
