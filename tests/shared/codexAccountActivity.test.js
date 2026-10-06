@@ -489,6 +489,25 @@ test('stale account history preserves the locally verified streaks', () => {
   assert.equal(projected.summary.longestStreak, 1);
 });
 
+test('conflicting account history preserves its status and locally verified streaks', () => {
+  const raw = activity(100, '2026-09-28');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-27', tokens: 50 }, { startDate: '2026-09-28', tokens: 50 }
+  ];
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const history = {
+    daily: [{ date: '2026-09-28', tokens: 200, perClient: { codex: { tokens: 200 } } }],
+    monthly: [], summary: { currentStreak: 1, longestStreak: 1 }
+  };
+  const presented = { periods: { allTime: { totalTokens: 100 } }, codexAccountActivity: {
+    status: 'conflict', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens
+  } };
+  const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
+  assert.equal(projected.codexAccountActivity.status, 'conflict');
+  assert.equal(projected.summary.currentStreak, 1);
+  assert.equal(projected.summary.longestStreak, 1);
+});
+
 test('applied account Dashboard days use the account UTC boundary while stale days stay local', () => {
   const previousTz = process.env.TZ;
   process.env.TZ = 'America/Los_Angeles';

@@ -33,7 +33,7 @@ const CLIENT_HEALTH_VERSION = 1;
 
 // healthy      — usage was observed for this client
 // waiting      — its sources are present but nothing has been counted yet
-// attention    — something we do on the user's behalf is failing (a self-sync)
+// attention    — collection is failing, including a self-sync or local read
 // unavailable  — no source root on disk; nothing to read
 // unknown      — the producer could not tell, or sent a value this build
 //                does not recognise
@@ -44,8 +44,8 @@ const CLIENT_HEALTH_OVERALL_STATES = Object.freeze([
 const CLIENT_SOURCE_STATES = Object.freeze(['detected', 'missing', 'unknown']);
 
 // `direct` is the common case: tokscale parses the client's own files and there
-// is no fetch step to succeed or fail. Only the self-synced clients
-// (cursor / antigravity) ever report `idle` / `pending` / `ok` / `failed`.
+// is no fetch step to succeed or fail. Self-synced clients also report `idle`,
+// `pending`, or `ok`. A local adapter read can report `failed`, as can a sync.
 //
 // `unknown` is never produced — it is where an unrecognised value lands. It must
 // exist as its own state precisely because `direct` is a positive claim: a

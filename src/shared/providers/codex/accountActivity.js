@@ -231,7 +231,7 @@ function projectAccountActivityToHistory(history, snapshot, presentedStats, opti
       peakDayTokens: fullDaily.reduce((peak, row) => Math.max(peak, row.tokens), 0)
     },
     codexAccountActivity: {
-      status: account.status === 'stale' ? 'stale' : 'applied',
+      status: account.status,
       fetchedAt: account.fetchedAt,
       dateBoundary: 'source-defined',
       coverageThrough,

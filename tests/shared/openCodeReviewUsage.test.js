@@ -240,3 +240,214 @@ test('collector adds OCR once to all windows and history, then applies an exact 
   assert.deepEqual([corrected.today.totalTokens, corrected.month.totalTokens, corrected.allTime.totalTokens], [250, 580, 1480]);
   assert.equal(captured.fullScan, true);
 });
+
+test('collector isolates OCR read failures and retains complete usage while other clients refresh', async (t) => {
+  for (const [name, badLine] of [
+    ['malformed', '{"private-message":\n'],
+    ['invalid tokens', line(event('bad', undefined, { usage: { prompt_tokens: -1, completion_tokens: 1 } }))],
+    ['duplicate uuid', line(event('today', undefined, { usage: { prompt_tokens: 200, completion_tokens: 20 } }))],
+    ['read budget', line(event('bad', undefined, { model: 'private-model'.repeat(6000) }))]
+  ]) await t.test(name, async (t) => {
+    const f = fixture(t);
+    const { startCollector } = require('../../src/shared/collector');
+    let now = new Date(2026, 9, 6, 12);
+    const old = new Date(2026, 9, 5, 10).toISOString();
+    const today = new Date(2026, 9, 6, 10).toISOString();
+    const good = line(event('old', old)) + line(event('today', today));
+    fs.writeFileSync(f.file, good);
+    const updates = [], scans = [], logs = [], errors = [], previews = [];
+    let claudeTokens = 10;
+    const runtime = startCollector({
+      homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, now: () => now,
+      clients: 'claude,open-code-review', allTimeSince: '2026-01-01', deviceId: 'ocr-failure-test',
+      platform: 'linux', env: {}, wslScanEnabled: false, watchEnabled: false,
+      anchorPersistenceEnabled: false, dailyHistoryArchiveEnabled: false, projectsEnabled: false,
+      onUpdate: (summary) => { updates.push(summary); }, onPreview: (summary) => { previews.push(summary); },
+      onError: (error) => { errors.push(error); }, logger: (message) => { logs.push(message); },
+      runTokscale: async ({ flags }) => {
+        scans.push(flags);
+        return { entries: [{ client: 'claude', input: claudeTokens }] };
+      },
+      runGraph: async () => ({ contributions: [] })
+    });
+    t.after(() => runtime.stop());
+    await runtime.whenIdle();
+    assert.equal(updates.at(-1).allTime.totalTokens, 250);
+    fs.appendFileSync(f.file, line(event('append', today)));
+    assert.equal(await runtime.refreshClient('open-code-review'), true);
+    assert.equal(updates.at(-1).today.totalTokens, 250);
+    fs.appendFileSync(f.file, badLine);
+    claudeTokens = 20;
+    scans.length = 0;
+    assert.equal(await runtime.tick('watch:change', { todayOnly: true, forceHistory: true }), true);
+    const watched = updates.at(-1);
+    assert.deepEqual([watched.today.totalTokens, watched.month.totalTokens, watched.allTime.totalTokens], [260, 380, 380]);
+    assert.deepEqual(scans, [['--today']], 'bad OCR input must not trigger a history-revision full scan');
+    assert.equal(watched.history.summary.totalTokens, 360, 'history keeps the complete OCR reading');
+    assert.deepEqual(errors, []);
+    assert.ok(logs.some((message) => message.startsWith('open-code-review parse failed:')));
+    assert.ok(logs.every((message) => !message.includes(f.homeDir) && !message.includes('private-')));
+    previews.length = 0;
+    assert.equal(await runtime.tick('manual', { forceHistory: true }), true);
+    assert.deepEqual(['today', 'month', 'allTime'].map((period) => updates.at(-1)[period].totalTokens), [260, 380, 380]);
+    assert.ok(previews.every((preview) => preview.today.clients['open-code-review'] === 240));
+    now = new Date(2026, 10, 1, 12);
+    assert.equal(await runtime.tick('manual', { forceHistory: true }), true);
+    assert.deepEqual(['today', 'month', 'allTime'].map((period) => updates.at(-1)[period].totalTokens), [20, 20, 380]);
+    fs.writeFileSync(f.file, good + line(event('append', today)) + line(event('import', old)));
+    assert.equal(await runtime.refreshClient('open-code-review'), true);
+    assert.equal(updates.at(-1).allTime.totalTokens, 500, 'a repaired historical import replaces cached totals');
+  });
+});
+
+test('an initial OCR failure still publishes other clients without publishing partial history', async (t) => {
+  const f = fixture(t);
+  const { collectUsageOnce } = require('../../src/shared/collector');
+  fs.writeFileSync(f.file, line(event('valid')) + '{"private-message":\n');
+  const statuses = [];
+  let graphReads = 0;
+  const archivePath = path.join(f.homeDir, 'daily-history.json');
+  const summary = await collectUsageOnce({
+    homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, now: new Date(2026, 9, 6, 12),
+    clients: 'claude,open-code-review', allTimeSince: '2026-01-01', deviceId: 'ocr-first-failure',
+    platform: 'linux', env: {}, wslScanEnabled: false, includeHistory: true,
+    dailyHistoryArchiveEnabled: true, dailyHistoryArchiveOptions: { path: archivePath },
+    onHistoryStatus: (status) => statuses.push(status),
+    logger: () => { throw new Error('logging failed'); },
+    runTokscale: async () => ({ entries: [{ client: 'claude', input: 10 }] }),
+    runGraph: async () => { graphReads += 1; return { contributions: [] }; }
+  });
+  assert.deepEqual(['today', 'month', 'allTime'].map((period) => summary[period].totalTokens), [10, 10, 10]);
+  assert.equal(summary.history, undefined);
+  assert.equal(graphReads, 0);
+  assert.equal(statuses.at(-1).failureCode, 'open-code-review-history-unavailable');
+  assert.equal(fs.existsSync(archivePath), false, 'an incomplete OCR tick must not enter the daily archive');
+});
+
+test('collector OCR fallback stays within its runtime and never writes cached history after a failed read', async (t) => {
+  const f = fixture(t);
+  const { startCollector } = require('../../src/shared/collector');
+  const archivePath = path.join(f.homeDir, 'daily-history.json');
+  const updates = [];
+  const options = {
+    homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, now: new Date(2026, 9, 6, 12),
+    clients: 'claude,open-code-review', allTimeSince: '2026-01-01', deviceId: 'ocr-lifecycle-test',
+    platform: 'linux', env: {}, wslScanEnabled: false, watchEnabled: false, anchorPersistenceEnabled: false,
+    dailyHistoryArchiveEnabled: true, dailyHistoryArchiveOptions: { path: archivePath },
+    onUpdate: (summary) => { updates.push(summary); },
+    runTokscale: async () => ({ entries: [{ client: 'claude', input: 10 }] }),
+    runGraph: async () => ({ contributions: [] })
+  };
+  fs.writeFileSync(f.file, line(event('valid', new Date(2026, 9, 6, 10).toISOString())));
+  let runtime = startCollector(options);
+  t.after(() => runtime.stop());
+  await runtime.whenIdle();
+  const saved = fs.readFileSync(archivePath, 'utf8');
+  const successfulHistoryAt = runtime.getDiagnostics().lastHistorySuccessAt;
+  const successfulFullScanAt = runtime.getDiagnostics().lastFullScanAt;
+  fs.appendFileSync(f.file, '{bad json}\n');
+  assert.equal(await runtime.tick('manual', { forceHistory: true }), true);
+  assert.equal(updates.at(-1).allTime.totalTokens, 130);
+  assert.equal(fs.readFileSync(archivePath, 'utf8'), saved);
+  assert.equal(runtime.getDiagnostics().lastHistorySuccessAt, successfulHistoryAt);
+  assert.equal(runtime.getDiagnostics().lastFullScanAt, successfulFullScanAt);
+  assert.equal(runtime.getDiagnostics().lastHistoryFailureCode, 'open-code-review-history-unavailable');
+  runtime.stop();
+  runtime = startCollector({ ...options, allTimeSince: '2026-10-06' });
+  await runtime.whenIdle();
+  assert.equal(updates.at(-1).allTime.totalTokens, 10, 'a replacement runtime cannot borrow an old OCR snapshot');
+  assert.equal(updates.at(-1).history, undefined);
+  assert.equal(fs.readFileSync(archivePath, 'utf8'), saved);
+  fs.writeFileSync(f.file, '');
+  assert.equal(await runtime.tick('manual', { forceHistory: true }), true);
+  assert.equal(updates.at(-1).allTime.totalTokens, 10, 'a successful empty source replaces cached usage');
+});
+
+test('collector propagates OCR abort errors and aborted signals with ordinary error reasons', async (t) => {
+  const f = fixture(t);
+  const { collectUsageOnce } = require('../../src/shared/collector');
+  fs.writeFileSync(f.file, line(event('valid')));
+  const originalOpen = fs.promises.open;
+  t.after(() => { fs.promises.open = originalOpen; });
+  for (const kind of ['named', 'coded', 'signal']) {
+    const controller = new AbortController();
+    const error = new Error('cancelled test read');
+    if (kind === 'named') error.name = 'AbortError';
+    if (kind === 'coded') error.code = 'ABORT_ERR';
+    fs.promises.open = async (filePath, ...args) => {
+      if (filePath === f.file) {
+        if (kind === 'signal') controller.abort(error);
+        throw error;
+      }
+      return originalOpen(filePath, ...args);
+    };
+    await assert.rejects(collectUsageOnce({
+      homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, clients: 'open-code-review',
+      signal: controller.signal, wslScanEnabled: false, historyEnabled: false
+    }), (actual) => actual === error);
+  }
+});
+
+test('a failed OCR read keeps a supplied anchor partition without a runtime row cache', async (t) => {
+  const f = fixture(t);
+  const { collectUsageOnce, localTodayKey } = require('../../src/shared/collector');
+  const now = new Date(2026, 9, 6, 12);
+  fs.writeFileSync(f.file, line(event('valid', new Date(2026, 9, 6, 10).toISOString())));
+  let captured;
+  const options = {
+    homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, now,
+    clients: 'claude,open-code-review', allTimeSince: '2026-01-01', deviceId: 'ocr-anchor-test',
+    platform: 'linux', env: {}, wslScanEnabled: false,
+    onAnchorComputed: (value) => { captured = value; },
+    runTokscale: async () => ({ entries: [{ client: 'claude', input: 10 }] })
+  };
+  await collectUsageOnce(options);
+  const anchor = { dateKey: localTodayKey(now), ...captured.windowsPeriods,
+    todayPartitions: captured.todayPartitions, openCodeReviewHistoryRevision: captured.openCodeReviewHistoryRevision };
+  fs.appendFileSync(f.file, '{bad json}\n');
+  const summary = await collectUsageOnce({ ...options, todayOnlyAnchor: anchor, targetClients: 'open-code-review', includeHistory: true });
+  assert.deepEqual(['today', 'month', 'allTime'].map((period) => summary[period].totalTokens), [130, 130, 130]);
+  assert.equal(captured.fullScan, false);
+  assert.equal(summary.history, undefined);
+  assert.equal(summary.clientHealth.clients['open-code-review'].collection.state, 'failed');
+});
+
+test('a restored anchor without OCR partitions cannot certify a failed cold read as zero usage', async (t) => {
+  const f = fixture(t);
+  const { startCollector } = require('../../src/shared/collector');
+  const previousSharedDir = process.env.TOKEN_MONITOR_SHARED_DIR;
+  process.env.TOKEN_MONITOR_SHARED_DIR = path.join(f.homeDir, 'shared');
+  t.after(() => {
+    if (previousSharedDir === undefined) delete process.env.TOKEN_MONITOR_SHARED_DIR;
+    else process.env.TOKEN_MONITOR_SHARED_DIR = previousSharedDir;
+  });
+  const now = new Date();
+  fs.writeFileSync(f.file, line(event('valid', now.toISOString())));
+  const updates = [], scans = [];
+  const options = {
+    homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, now,
+    clients: 'claude,open-code-review', allTimeSince: '2024-01-01', deviceId: 'ocr-cold-test',
+    platform: 'linux', env: {}, wslScanEnabled: false, watchEnabled: false,
+    onUpdate: (summary) => { updates.push(summary); },
+    runTokscale: async ({ flags }) => { scans.push(flags); return { entries: [{ client: 'claude', input: 10 }] }; },
+    runGraph: async () => ({ contributions: [] })
+  };
+  let runtime = startCollector(options);
+  t.after(() => runtime.stop());
+  await runtime.whenIdle();
+  const anchorPath = path.join(process.env.TOKEN_MONITOR_SHARED_DIR, 'collector-anchor.json');
+  const saved = fs.readFileSync(anchorPath, 'utf8');
+  assert.equal(JSON.parse(saved).todayPartitions, undefined);
+  runtime.stop();
+  fs.appendFileSync(f.file, '{bad json}\n');
+  scans.length = 0;
+  runtime = startCollector(options);
+  await runtime.whenIdle();
+  const summary = updates.at(-1);
+  assert.equal(summary.history, undefined);
+  assert.equal(summary.clientHealth.clients['open-code-review'].collection.state, 'failed');
+  assert.equal(summary.clientHealth.clients['open-code-review'].overall, 'attention');
+  assert.ok(!summary.clientHealth.clients['open-code-review'].diagnostics?.some(({ code }) => code === 'no-usage-observed'));
+  assert.deepEqual(scans, [['--today'], ['--month'], ['--since', '2024-01-01']]);
+  assert.equal(fs.readFileSync(anchorPath, 'utf8'), saved);
+});

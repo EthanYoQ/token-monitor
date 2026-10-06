@@ -1193,7 +1193,7 @@ async function collectUsageOnce(options) {
   let dailyHistoryLiveDays = options.dailyHistoryLiveDays;
   let todayPartitions = null;
   const anchor = options.todayOnlyAnchor;
-  const anchorUsed = Boolean(
+  let anchorUsed = Boolean(
     anchor
     && anchor.dateKey === localTodayKey(collectedAt)
     && canTargetTodayPartitions(anchor, targetClients)
@@ -1207,6 +1207,7 @@ async function collectUsageOnce(options) {
   let qoderCnPeriodReadFailed = false;
   let openCodeReviewRows = null;
   let openCodeReviewPeriods = null;
+  let openCodeReviewReadFailed = false;
   let ocrHistoryRevision = anchor?.openCodeReviewHistoryRevision;
   let ccSwitchTodayRows = [];
   let ccSwitchClaudeRefreshed = false;
@@ -1220,18 +1221,40 @@ async function collectUsageOnce(options) {
     const progress = { ...periods };
     if (qoderCnPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, qoderCnPeriods.today);
     if (qoderCnPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, qoderCnPeriods.month);
+    if (openCodeReviewPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, openCodeReviewPeriods.today);
+    if (openCodeReviewPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, openCodeReviewPeriods.month);
     try { options.onProgress({ ...progress, updatedAt: new Date().toISOString() }); } catch (_) {}
   };
   if (normalizedClients) {
     if (includesOpenCodeReview && (!targetRequested || targetClientSet.has('open-code-review') || options.includeHistory)) {
-      openCodeReviewRows = await collectOpenCodeReviewRows({ homeDir: options.homeDir,
-        cacheDir: options.openCodeReviewCacheDir, env: options.env, platform: platformValue, signal: options.signal });
-      ocrHistoryRevision = openCodeReviewHistoryRevision(openCodeReviewRows, collectedAt);
-      if (anchorUsed && ocrHistoryRevision !== anchor.openCodeReviewHistoryRevision) {
-        return collectUsageOnce({ ...options, now: collectedAt, todayOnlyAnchor: null, targetClients: null });
+      try {
+        openCodeReviewRows = await collectOpenCodeReviewRows({ homeDir: options.homeDir,
+          cacheDir: options.openCodeReviewCacheDir, env: options.env, platform: platformValue, signal: options.signal });
+        throwIfAborted(options.signal);
+        if (options.openCodeReviewState) options.openCodeReviewState.rows = openCodeReviewRows;
+      } catch (err) {
+        if (options.signal?.aborted) throw abortReason(options.signal);
+        if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR') throw err;
+        openCodeReviewReadFailed = true;
+        openCodeReviewRows = options.openCodeReviewState?.rows || null;
+        if (anchorUsed && !anchor.todayPartitions?.['open-code-review'] && !openCodeReviewRows) {
+          anchorUsed = false;
+          ocrHistoryRevision = undefined;
+        }
+        const code = ['OPEN_CODE_REVIEW_INVALID_USAGE', 'OPEN_CODE_REVIEW_READ_BUDGET_EXCEEDED'].includes(err?.code)
+          ? err.code : 'OPEN_CODE_REVIEW_READ_FAILED';
+        try { options.logger?.(`open-code-review parse failed: ${code}`); } catch (_) {}
       }
-      const json = buildOpenCodeReviewPeriods({ rows: openCodeReviewRows, now: collectedAt, allTimeSince });
-      openCodeReviewPeriods = Object.fromEntries(Object.entries(json).map(([period, value]) => [period, extractUsageFromTokscale(value)]));
+      if (openCodeReviewRows) {
+        if (!openCodeReviewReadFailed) {
+          ocrHistoryRevision = openCodeReviewHistoryRevision(openCodeReviewRows, collectedAt);
+          if (anchorUsed && ocrHistoryRevision !== anchor.openCodeReviewHistoryRevision) {
+            return collectUsageOnce({ ...options, now: collectedAt, todayOnlyAnchor: null, targetClients: null });
+          }
+        }
+        const json = buildOpenCodeReviewPeriods({ rows: openCodeReviewRows, now: collectedAt, allTimeSince });
+        openCodeReviewPeriods = Object.fromEntries(Object.entries(json).map(([period, value]) => [period, extractUsageFromTokscale(value)]));
+      }
     }
     const syncClients = targetRequested ? targetTokscaleClients : tokscaleClients;
     await maybeSyncCursor(syncClients, options.logger, {
@@ -1362,6 +1385,9 @@ async function collectUsageOnce(options) {
         // A transient local.db read failure must not turn the existing Qoder CN
         // partition into an empty one or subtract it from month/allTime.
         freshPartitions.qodercn = anchor.todayPartitions.qodercn;
+      }
+      if (openCodeReviewReadFailed && anchor.todayPartitions?.['open-code-review']) {
+        freshPartitions['open-code-review'] = anchor.todayPartitions['open-code-review'];
       }
       if (!useTargetedPartitions) {
         // The fallback rebuilds every Tokscale partition, but parse-local
@@ -1528,6 +1554,7 @@ async function collectUsageOnce(options) {
     options.historyEnabled !== false
     && options.dailyHistoryArchiveEnabled
     && options.deferLiveHistoryCapture !== true
+    && !openCodeReviewReadFailed
   ) {
     try {
       const retainedLive = retainLiveDailyHistory(today, {
@@ -1624,6 +1651,7 @@ async function collectUsageOnce(options) {
       windowsPeriods,
       todayPartitions,
       qoderCnPeriods,
+      openCodeReviewReadFailed,
       fullScan: !anchorUsed,
       openCodeReviewHistoryRevision: ocrHistoryRevision,
       ccSwitchAdmittedRows: admittedCcRows,
@@ -1636,7 +1664,7 @@ async function collectUsageOnce(options) {
   }
   if (options.historyEnabled === false) {
     summary.history = null;
-  } else if (options.includeHistory) {
+  } else if (options.includeHistory && (!openCodeReviewReadFailed || openCodeReviewRows)) {
     // The history graph needs the full Qoder CN row set: anchored (watch/interval)
     // ticks collect Qoder CN rows only since local midnight for the period delta,
     // so reusing qoderCnRows here would truncate the history panel to today and
@@ -1688,10 +1716,10 @@ async function collectUsageOnce(options) {
       runGraph: runGraphFn,
       signal: options.signal,
       dailyHistoryArchiveEnabled: options.dailyHistoryArchiveEnabled,
-      dailyHistoryArchiveWriteEnabled: options.dailyHistoryArchiveWriteEnabled,
+      dailyHistoryArchiveWriteEnabled: openCodeReviewReadFailed ? false : options.dailyHistoryArchiveWriteEnabled,
       dailyHistoryArchiveOptions: options.dailyHistoryArchiveOptions,
       dailyHistoryLiveDays,
-      onHistoryStatus: options.onHistoryStatus,
+      onHistoryStatus: openCodeReviewReadFailed ? null : options.onHistoryStatus,
       logger: options.logger
     });
     throwIfAborted(options.signal);
@@ -1699,6 +1727,12 @@ async function collectUsageOnce(options) {
     if (!qoderCnHistoryReadFailed && qoderCnGraph && typeof options.onQoderCnHistoryGraph === 'function') {
       options.onQoderCnHistoryGraph(qoderCnGraph);
     }
+  }
+  if (options.historyEnabled !== false && options.includeHistory && openCodeReviewReadFailed) {
+    try {
+      options.onHistoryStatus?.({ attemptedAt: collectedAt.toISOString(), successAt: null,
+        failureCode: 'open-code-review-history-unavailable', durationMs: 0 });
+    } catch (_) {}
   }
   // After history, so `lastActivityDay` can come from the daily buckets this
   // scan already produced rather than from a second source of truth.
@@ -1713,6 +1747,12 @@ async function collectUsageOnce(options) {
       localTodayKey(collectedAt)
     )
   });
+  if (openCodeReviewReadFailed && clientHealth?.clients['open-code-review']) {
+    const entry = clientHealth.clients['open-code-review'];
+    entry.collection = { state: 'failed', lastAttemptAt: collectedAt.toISOString() };
+    entry.overall = deriveClientOverall(entry);
+    if (entry.diagnostics) entry.diagnostics = entry.diagnostics.filter(({ code }) => code !== 'no-usage-observed');
+  }
   if (clientHealth) summary.clientHealth = clientHealth;
   return summary;
 }
@@ -2647,6 +2687,7 @@ function startCollector(options) {
   // later full/history tick instead of losing it at the tick boundary.
   let liveDailyHistoryDays = {};
   let qoderCnHistoryGraph = null;
+  const openCodeReviewState = { rows: null };
   let lastFullScanAt = 0;
   let pendingWaiters = [];
   let debounceTimer = null;
@@ -2884,6 +2925,7 @@ function startCollector(options) {
         qoderCnFallbackPeriods: anchor?.qoderCnPeriods || null,
         qoderCnHistoryFallbackGraph: qoderCnHistoryGraph,
         qoderCnReadState,
+        openCodeReviewState,
         onAnchorComputed: (x) => { captured = x; },
         onQoderCnHistoryGraph: (graph) => { qoderCnHistoryGraph = graph; },
         onProgress: (partial) => {
@@ -2966,8 +3008,8 @@ function startCollector(options) {
         };
         wslAnchor = captured.wslBundle;
         wslStatusAnchor = captured.wslStatus || null;
-        if (!qoderCnReadState.periodFailed) lastFullScanAt = Date.now();
-        if (options.anchorPersistenceEnabled !== false) {
+        if (!qoderCnReadState.periodFailed && !captured.openCodeReviewReadFailed) lastFullScanAt = Date.now();
+        if (options.anchorPersistenceEnabled !== false && !captured.openCodeReviewReadFailed) {
           try {
             fs.mkdirSync(path.dirname(anchorPath), { recursive: true });
             fs.writeFileSync(anchorPath, JSON.stringify({
@@ -3013,7 +3055,7 @@ function startCollector(options) {
       const visibleSummary = transformedSummary && typeof transformedSummary === 'object'
         ? transformedSummary
         : summary;
-      if (historyEnabled !== false && options.dailyHistoryArchiveEnabled) {
+      if (historyEnabled !== false && options.dailyHistoryArchiveEnabled && !captured?.openCodeReviewReadFailed) {
         try {
           const visibleAt = visibleSummary.updatedAt || summary.updatedAt;
           const visibleDate = visibleAt ? new Date(visibleAt) : new Date();
@@ -3404,6 +3446,7 @@ function startCollector(options) {
     if (stopped) return;
     stopped = true;
     runtimeAbortController.abort(new Error('collector stopped'));
+    openCodeReviewState.rows = null;
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     if (intervalTimer) { clearTimeout(intervalTimer); intervalTimer = null; }
     clearRolloverHistoryRetry();
