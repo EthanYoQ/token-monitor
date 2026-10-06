@@ -3,6 +3,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const {
   dockTarget,
   hiddenTarget,
@@ -10,6 +13,12 @@ const {
 } = require('../../src/electron/mainWindowAutoHide');
 
 const display = { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+
+function mainFunctions(names, context) {
+  const source = fs.readFileSync(path.join(__dirname, '../../src/electron/main.js'), 'utf8');
+  const functions = names.map((name) => source.match(new RegExp(`function ${name}\\([^]*?\\n}\\n`))[0]);
+  return vm.runInNewContext(`${functions.join('\n')}\n({ ${names.join(', ')} });`, context);
+}
 
 test('all four exposed work-area edges retain a reachable strip', () => {
   const cases = [
@@ -41,6 +50,7 @@ function fixture(initial = {}) {
   let minimized = false;
   const settings = { mainWindowAutoHideEnabled: true, windowBehavior: 'floating', ...initial.settings };
   const calls = [];
+  const pendingMoves = [];
   let saves = 0;
   win.isDestroyed = () => false;
   win.isVisible = () => initial.visible !== false;
@@ -53,14 +63,19 @@ function fixture(initial = {}) {
   win.isMaximized = () => maximized;
   win.isFullScreen = () => false;
   win.getBounds = () => ({ ...bounds });
-  win.setBounds = (next) => { bounds = { ...next }; calls.push(next); win.emit('moved'); };
+  win.setBounds = (next) => {
+    bounds = { ...next };
+    calls.push(next);
+    if (initial.deferredMoves) pendingMoves.push(() => win.emit('moved'));
+    else win.emit('moved');
+  };
   const screen = new EventEmitter();
   let displays = [display];
   screen.getAllDisplays = () => displays;
   screen.getCursorScreenPoint = () => cursor;
-  const controller = createMainWindowAutoHide({ window: win, screen, getSettings: () => settings, save: () => { saves += 1; }, platform: 'win32', animationMs: initial.animationMs ?? 0, reducedMotion: () => initial.reducedMotion === true, setInterval: () => 1, clearInterval: () => {}, isForegroundFullscreen: () => fullScreen });
+  const controller = createMainWindowAutoHide({ window: win, screen, getSettings: () => settings, save: () => { saves += 1; initial.onSave?.({ ...settings.windowBounds }); }, platform: 'win32', animationMs: initial.animationMs ?? 0, reducedMotion: () => initial.reducedMotion === true, setInterval: () => 1, clearInterval: () => {}, isForegroundFullscreen: () => fullScreen });
   win.on('moved', () => controller.onMoved());
-  return { controller, settings, win, screen, calls, saves: () => saves, setCursor: (point) => { cursor = point; }, setFullscreen: (value) => { fullScreen = value; }, setMaximized: (value) => { maximized = value; }, setMinimized: (value) => { minimized = value; }, resize: (next) => { bounds = next; controller.onResized(); }, setDisplays: (next) => { displays = next; screen.emit('display-removed'); }, bounds: () => bounds };
+  return { controller, settings, win, screen, calls, flushMoved: () => { while (pendingMoves.length) pendingMoves.shift()(); }, saves: () => saves, setCursor: (point) => { cursor = point; }, setFullscreen: (value) => { fullScreen = value; }, setMaximized: (value) => { maximized = value; }, setMinimized: (value) => { minimized = value; }, resize: (next) => { bounds = next; controller.onResized(); }, setDisplays: (next) => { displays = next; screen.emit('display-removed'); }, bounds: () => bounds };
 }
 
 test('enabling does not snap an ordinary window; dragging docks and disabling restores it', () => {
@@ -105,6 +120,87 @@ test('a late duplicate moved event cannot abandon a hidden edge before hover rev
   await new Promise((resolve) => setTimeout(resolve, 190));
   assert.deepEqual(f.controller.state(), { side: 'right', hidden: false });
   assert.equal(f.bounds().x, 1560);
+  f.controller.dispose();
+});
+
+test('moving a hidden dock restores visible bounds before normal persistence', () => {
+  const cases = [
+    { side: 'left', bounds: { x: 0, y: 100, width: 360, height: 600 }, moved: { x: -352, y: 130, width: 360, height: 600 }, visible: { x: 0, y: 130, width: 360, height: 600 } },
+    { side: 'right', bounds: { x: 1560, y: 100, width: 360, height: 600 }, moved: { x: 1912, y: 130, width: 360, height: 600 }, visible: { x: 1560, y: 130, width: 360, height: 600 } },
+    { side: 'top', bounds: { x: 400, y: 0, width: 360, height: 600 }, moved: { x: 430, y: -592, width: 360, height: 600 }, visible: { x: 430, y: 0, width: 360, height: 600 } },
+    { side: 'bottom', bounds: { x: 400, y: 440, width: 360, height: 600 }, moved: { x: 430, y: 1032, width: 360, height: 600 }, visible: { x: 430, y: 440, width: 360, height: 600 } }
+  ];
+  for (const { side, bounds, moved, visible, deferredMoves } of cases.flatMap((item) => [item, { ...item, deferredMoves: true }])) {
+    let persist;
+    const savedBounds = [];
+    const f = fixture({ bounds, deferredMoves, onSave: (saved) => savedBounds.push(saved), settings: { mainWindowAutoHideSide: side, windowBounds: bounds } });
+    const { persistBoundsSoon } = mainFunctions(['persistBoundsSoon'], {
+      mainWindow: f.win,
+      mainWindowAutoHide: f.controller,
+      settings: f.settings,
+      floatingBubbleState: {},
+      shouldPersistWindowBounds: () => true,
+      stopPersistBoundsTimer: () => { persist = null; },
+      setTimeout: (callback) => { persist = callback; return 1; },
+      saveSettings: () => savedBounds.push({ ...f.settings.windowBounds }),
+      persistBoundsTimer: null
+    });
+    f.win.on('moved', persistBoundsSoon);
+    f.controller.sync();
+    f.controller.hide();
+    f.flushMoved();
+    assert.equal(persist, undefined);
+
+    f.win.setBounds(moved);
+    f.flushMoved();
+    assert.deepEqual(f.bounds(), visible, side);
+    assert.deepEqual(f.controller.state(), { side: null, hidden: false });
+    persist();
+    assert.deepEqual(f.settings.windowBounds, visible, side);
+    assert.deepEqual(savedBounds, [visible]);
+    f.win.emit('moved');
+    f.controller.tick();
+    assert.deepEqual(f.bounds(), visible);
+    assert.equal(f.controller.isDocked(), false);
+    f.controller.dispose();
+  }
+});
+
+test('collapsing a previously docked maximized window preserves the bubble size', () => {
+  const expandedBounds = { x: 0, y: 100, width: 360, height: 600 };
+  const collapsedBounds = { x: 0, y: 100, width: 48, height: 48 };
+  const f = fixture({ bounds: expandedBounds, settings: { mainWindowAutoHideSide: 'left', windowBounds: expandedBounds } });
+  f.controller.sync();
+  f.controller.hide();
+  f.setMaximized(true);
+  f.controller.sync();
+  f.settings.floatingBubbleEnabled = true;
+  f.controller.sync();
+  assert.deepEqual(f.controller.safeBounds(), expandedBounds);
+  let created;
+  f.win.isFocused = () => false;
+  const { collapseFloatingBubble, replaceMainWindow } = mainFunctions(['collapseFloatingBubble', 'replaceMainWindow'], {
+    mainWindow: f.win,
+    mainWindowAutoHide: f.controller,
+    settings: f.settings,
+    process: { platform: 'win32' },
+    floatingBubbleState: {},
+    stopFloatingBubbleAutoCollapseTimer: () => {},
+    applyNativeMaterial: () => {},
+    persistWindowBounds: (bounds) => { f.settings.windowBounds = bounds; },
+    createWindow: (bounds, options) => { created = { bounds, options }; },
+    sendFloatingBubbleState: () => {},
+    handoffWindow: () => {}
+  });
+
+  assert.equal(collapseFloatingBubble({ side: 'left', expandedBounds, collapsedBounds }), true);
+  assert.deepEqual(created.bounds, collapsedBounds);
+  assert.equal(created.options.collapsedFloatingBubble, true);
+  assert.deepEqual(f.settings.windowBounds, expandedBounds);
+
+  replaceMainWindow({ x: -352, y: 100, width: 360, height: 600 });
+  assert.deepEqual(created.bounds, expandedBounds);
+  assert.equal(created.options.collapsedFloatingBubble, false);
   f.controller.dispose();
 });
 

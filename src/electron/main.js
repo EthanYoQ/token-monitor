@@ -6611,7 +6611,7 @@ function handleZoomShortcut(event, input) {
 
 function replaceMainWindow(bounds, options = {}) {
   const old = mainWindow;
-  if (mainWindowAutoHide?.safeBounds()) bounds = mainWindowAutoHide.safeBounds();
+  if (options.collapsedFloatingBubble !== true && mainWindowAutoHide?.safeBounds()) bounds = mainWindowAutoHide.safeBounds();
   const wasFocused = old && !old.isDestroyed() ? old.isFocused() : false;
   if (old && !old.isDestroyed()) old.removeAllListeners('close');
   // Build the new window first so total window count never drops to 0

@@ -255,6 +255,10 @@ function createMainWindowAutoHide(options) {
     lastProgrammaticBounds = null;
     clearAnimation();
     if (side && !eligible()) { release(true); return; }
+    if (side && hidden && !dockTarget(now, screen.getAllDisplays())) {
+      release(true, visibleBounds({ ...now, width: expanded.width, height: expanded.height }, screen.getAllDisplays()));
+      return;
+    }
     if (side) release(false);
     onMoveFinished();
   }
