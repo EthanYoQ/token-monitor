@@ -13,6 +13,7 @@ const {
 } = require('../../src/electron/mainWindowAutoHide');
 
 const display = { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } };
+const displayWithoutReservedArea = { ...display, bounds: display.workArea };
 
 function mainFunctions(names, context) {
   const source = fs.readFileSync(path.join(__dirname, '../../src/electron/main.js'), 'utf8');
@@ -28,9 +29,21 @@ test('all four exposed work-area edges retain a reachable strip', () => {
     [{ x: 400, y: 437, width: 360, height: 600 }, 'bottom', { x: 400, y: 1032 }]
   ];
   for (const [bounds, side, hidden] of cases) {
-    const dock = dockTarget(bounds, [display]);
+    const dock = dockTarget(bounds, [displayWithoutReservedArea]);
     assert.equal(dock.side, side);
     assert.deepEqual({ x: hiddenTarget(dock.bounds, display.workArea, side).x, y: hiddenTarget(dock.bounds, display.workArea, side).y }, hidden);
+  }
+});
+
+test('reserved work-area edges cannot dock', () => {
+  const cases = [
+    ['left', { x: 40, y: 0, width: 1880, height: 1080 }, { x: 43, y: 150, width: 360, height: 600 }],
+    ['right', { x: 0, y: 0, width: 1880, height: 1080 }, { x: 1517, y: 150, width: 360, height: 600 }],
+    ['top', { x: 0, y: 40, width: 1920, height: 1040 }, { x: 400, y: 43, width: 360, height: 600 }],
+    ['bottom', display.workArea, { x: 400, y: 437, width: 360, height: 600 }]
+  ];
+  for (const [side, workArea, bounds] of cases) {
+    assert.equal(dockTarget(bounds, [{ ...display, workArea }]), null, side);
   }
 });
 
@@ -70,7 +83,7 @@ function fixture(initial = {}) {
     else win.emit('moved');
   };
   const screen = new EventEmitter();
-  let displays = [display];
+  let displays = initial.displays || [display];
   screen.getAllDisplays = () => displays;
   screen.getCursorScreenPoint = () => cursor;
   const controller = createMainWindowAutoHide({ window: win, screen, getSettings: () => settings, save: () => { saves += 1; initial.onSave?.({ ...settings.windowBounds }); }, platform: 'win32', animationMs: initial.animationMs ?? 0, reducedMotion: () => initial.reducedMotion === true, setInterval: () => 1, clearInterval: () => {}, isForegroundFullscreen: () => fullScreen });
@@ -108,6 +121,50 @@ test('active reveal defeats a queued hide and keeps the window reachable', () =>
   f.controller.dispose();
 });
 
+test('a saved reserved edge is released on restore', () => {
+  const bounds = { x: 400, y: 440, width: 360, height: 600 };
+  const f = fixture({ bounds, settings: { mainWindowAutoHideSide: 'bottom', windowBounds: bounds } });
+  f.controller.sync();
+  assert.deepEqual(f.controller.state(), { side: null, hidden: false });
+  assert.equal(f.settings.mainWindowAutoHideSide, null);
+  assert.deepEqual(f.bounds(), bounds);
+  f.controller.dispose();
+});
+
+test('hidden hover only reveals inside the work-area intersection', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const bounds = { x: 0, y: 0, width: 360, height: 1080 };
+  const f = fixture({ bounds, settings: { mainWindowAutoHideSide: 'left', windowBounds: bounds } });
+  t.after(() => f.controller.dispose());
+  f.controller.sync();
+  f.controller.hide();
+  for (const point of [{ x: 3, y: 1050 }, { x: -20, y: 150 }]) {
+    f.setCursor(point);
+    f.controller.tick();
+    t.mock.timers.tick(150);
+    assert.deepEqual(f.controller.state(), { side: 'left', hidden: true }, JSON.stringify(point));
+  }
+  f.setCursor({ x: 3, y: 150 });
+  f.controller.tick();
+  t.mock.timers.tick(150);
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: false });
+});
+
+test('hover delay rechecks the work-area intersection before revealing', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const bounds = { x: 0, y: 0, width: 360, height: 1080 };
+  const f = fixture({ bounds, settings: { mainWindowAutoHideSide: 'left', windowBounds: bounds } });
+  t.after(() => f.controller.dispose());
+  f.controller.sync();
+  f.controller.hide();
+  f.setCursor({ x: 3, y: 150 });
+  f.controller.tick();
+  t.mock.timers.tick(149);
+  f.setCursor({ x: 3, y: 1050 });
+  t.mock.timers.tick(1);
+  assert.deepEqual(f.controller.state(), { side: 'left', hidden: true });
+});
+
 test('a late duplicate moved event cannot abandon a hidden edge before hover reveal', async () => {
   const f = fixture();
   f.win.setBounds({ x: 1558, y: 100, width: 360, height: 600 });
@@ -133,7 +190,7 @@ test('moving a hidden dock restores visible bounds before normal persistence', (
   for (const { side, bounds, moved, visible, deferredMoves } of cases.flatMap((item) => [item, { ...item, deferredMoves: true }])) {
     let persist;
     const savedBounds = [];
-    const f = fixture({ bounds, deferredMoves, onSave: (saved) => savedBounds.push(saved), settings: { mainWindowAutoHideSide: side, windowBounds: bounds } });
+    const f = fixture({ bounds, deferredMoves, displays: [displayWithoutReservedArea], onSave: (saved) => savedBounds.push(saved), settings: { mainWindowAutoHideSide: side, windowBounds: bounds } });
     const { persistBoundsSoon } = mainFunctions(['persistBoundsSoon'], {
       mainWindow: f.win,
       mainWindowAutoHide: f.controller,
