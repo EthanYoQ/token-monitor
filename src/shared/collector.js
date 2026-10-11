@@ -318,14 +318,45 @@ function spawnTokscaleJson(userArgs, commandTimeoutMs, command = tokscaleCommand
   });
 }
 
-function readCodexAccountActivity(options = {}) {
-  return spawnTokscaleJson(
-    ['codex', 'activity', '--json'],
-    options.commandTimeoutMs || 15_000,
-    tokscaleCommand(),
-    options.signal,
-    { operation: 'Codex account activity' }
-  );
+async function readCodexAccountActivity(options = {}) {
+  const command = options.command || tokscaleCommand();
+  const env = options.env || command.env || process.env;
+  const platform = options.platform || process.platform;
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const { codexCommandCandidates } = require('./providers/codex/limits');
+  const exists = options.existsSync || fs.existsSync;
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH';
+  const nativeDirs = codexCommandCandidates(env, platform, options)
+    .filter((candidate) => pathApi.isAbsolute(candidate)
+      && pathApi.basename(candidate) === (platform === 'win32' ? 'codex.exe' : 'codex')
+      && exists(candidate))
+    .map((candidate) => pathApi.dirname(candidate));
+  const environments = [...new Set(nativeDirs)].map((directory) => ({
+    ...env, [pathKey]: [directory, env[pathKey]].filter(Boolean).join(pathApi.delimiter)
+  }));
+  environments.push(env);
+  const now = options.now || Date.now;
+  const deadline = now() + (options.commandTimeoutMs || 15_000);
+  const run = options.runCommand || spawnTokscaleJson;
+  let lastResult;
+  let lastError;
+  for (const childEnv of environments) {
+    throwIfAborted(options.signal);
+    const remaining = deadline - now();
+    if (remaining <= 0) throw new Error('Codex account activity timed out');
+    try {
+      lastResult = await run(['codex', 'activity', '--json'], Math.min(5000, remaining),
+        { ...command, env: childEnv }, options.signal, { operation: 'Codex account activity' });
+      throwIfAborted(options.signal);
+      if (lastResult?.codexAccountActivity?.status === 'available') return lastResult;
+    } catch (error) {
+      throwIfAborted(options.signal);
+      if (error.code === 'termination-unconfirmed') throw error;
+      lastError = error;
+    }
+  }
+  if (lastResult) return lastResult;
+  throw lastError || new Error('Codex account activity unavailable');
 }
 
 const TOKSCALE_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;

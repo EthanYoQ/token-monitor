@@ -32,6 +32,7 @@ const els = {
   heatmap: document.getElementById('dashHeatmap'),
   heatmapScope: document.getElementById('dashHeatmapScope'),
   cards: document.getElementById('dashCards'),
+  accountCards: document.getElementById('dashAccountCards'),
   scopeNote: document.getElementById('dashScopeNote'),
   empty: document.getElementById('dashEmpty'),
   tooltip: document.getElementById('dashTooltip'),
@@ -508,6 +509,8 @@ function renderActivity() {
     if (account.fetchedAt) scopeNotes.push(t('usage.codexAccountActivity.lastRead', {
       date: new Date(account.fetchedAt).toLocaleString(state.locale)
     }));
+    if (account.periods?.today?.headlineSource === 'local') scopeNotes.push(t('usage.codexAccountActivity.historyLag'));
+    if (account.readStatus && account.readStatus !== 'available') scopeNotes.push(t('usage.codexAccountActivity.readFailed'));
     if (account.status === 'stale') scopeNotes.push(t('dashboard.scope.stale'));
     if (account.status === 'conflict') scopeNotes.push(t('usage.codexAccountActivity.conflict'));
   }
@@ -543,10 +546,16 @@ function renderActivity() {
     favoriteModel: 'dashboard.stat.favoriteModel', messages: 'dashboard.stat.messages'
   };
   els.cards.innerHTML = charts.statsCardsHtml(cards, {
-    label: (k) => `${t(LABELS[k] || k)}${accountBacked && ['totalCost', 'activeTimeMs', 'favoriteModel', 'messages'].includes(k) ? ` · ${t('dashboard.scope.local')}` : ''}`,
+    label: (k) => `${t(LABELS[k] || k)}${state.history?.summary?.dateMetricsScope === 'retained' && ['activeDays', 'currentStreak', 'peakDayTokens'].includes(k) ? ` · ${t('dashboard.scope.retained')}` : ''}${accountBacked && ['totalCost', 'favoriteModel', 'messages'].includes(k) ? ` · ${t('dashboard.scope.local')}` : ''}`,
     format: (c) => (c.kind === 'cost' ? formatCostCompact(c.value)
       : c.kind === 'duration' ? formatDurationCompact(c.value)
         : c.kind === 'model' ? (c.value || '—') : formatCompact(c.value))
+  });
+  const accountCards = charts.accountStatsCards(account);
+  els.accountCards.classList.toggle('hidden', !accountCards.length);
+  els.accountCards.innerHTML = charts.statsCardsHtml(accountCards, {
+    label: (key) => t(`usage.codexAccountActivity.${key}`),
+    format: (card) => card.value === null ? '--' : card.kind === 'duration' ? formatDurationCompact(card.value) : formatCompact(card.value)
   });
   balanceStatCards();
   renderBreakdown();

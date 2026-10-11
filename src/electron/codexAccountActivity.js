@@ -24,6 +24,7 @@ function createCodexAccountActivity(options = {}) {
     ...(Array.isArray(stored?.observedAccountKeys) ? stored.observedAccountKeys.filter((key) => typeof key === 'string' && key) : [])
   ]);
   const attempts = new Map();
+  const readStates = new Map();
   let pendingAccountRead = null;
   let controller = null;
   let timer = null;
@@ -81,13 +82,15 @@ function createCodexAccountActivity(options = {}) {
     const saved = key && accounts[key];
     if (!saved) return null;
     if (saved.dailyUsageBuckets != null && !Array.isArray(saved.dailyUsageBuckets)) return null;
-    return normalizeAccountActivity({ codexAccountActivity: {
+    const normalized = normalizeAccountActivity({ codexAccountActivity: {
       status: 'available',
       source: saved.source,
       fetchedAt: saved.fetchedAt,
       lifetimeTokens: saved.lifetimeTokens,
+      summary: saved.summary,
       dailyUsageBuckets: saved.dailyUsageBuckets?.map((bucket) => ({ startDate: bucket?.date, tokens: bucket?.tokens }))
     } }, key);
+    return normalized ? { ...normalized, ...readStates.get(key) } : null;
   }
 
   function refresh({ force = false } = {}) {
@@ -100,11 +103,13 @@ function createCodexAccountActivity(options = {}) {
     const isCurrent = () => generation === requestGeneration && !requestController.signal.aborted;
     let notifyAfterReadAttempt = false;
     let nextDelay = REFRESH_MS;
+    let requestedKey;
     const deferredAccountRead = Promise.resolve().then(async () => {
       try {
         if (!isCurrent()) return null;
         notifyAfterReadAttempt = true;
         const key = liveKey();
+        requestedKey = key;
         if (!key) return null;
         const elapsed = now() - (attempts.get(key) ?? -Infinity);
         if (!force && elapsed < REFRESH_MS) {
@@ -116,7 +121,12 @@ function createCodexAccountActivity(options = {}) {
         const raw = await readActivity({ signal: requestController.signal });
         if (!isCurrent() || liveKey() !== key) return null;
         let incoming = normalizeAccountActivity(raw, key);
-        if (!incoming) return snapshot();
+        if (!incoming) {
+          const error = new Error('Codex account activity did not return a usable snapshot');
+          error.activityStatus = ['unsupportedCli', 'unavailable'].includes(raw?.codexAccountActivity?.status)
+            ? raw.codexAccountActivity.status : 'invalid';
+          throw error;
+        }
         const current = snapshot();
         let correctionConfirmed = false;
         if (current && incoming.lifetimeTokens < current.lifetimeTokens) {
@@ -130,15 +140,18 @@ function createCodexAccountActivity(options = {}) {
         }
         const { snapshot: selected, conflict } = selectAccountActivity(current, incoming, { correctionConfirmed });
         if (conflict) {
+          readStates.set(key, { readStatus: 'conflict', lastAttemptAt: new Date(now()).toISOString() });
           options.onConflict?.({ accountKey: key, existing: selected.lifetimeTokens, incoming: incoming.lifetimeTokens });
           return selected;
         }
         if (!isCurrent() || liveKey() !== key) return null;
+        readStates.set(key, { readStatus: 'available', lastAttemptAt: new Date(now()).toISOString() });
         accounts[key] = selected;
         persist();
         return selected;
       } catch (error) {
         if (!isCurrent()) return null;
+        if (requestedKey) readStates.set(requestedKey, { readStatus: error.activityStatus || 'failed', lastAttemptAt: new Date(now()).toISOString() });
         reportError(error);
         return snapshot();
       } finally {
@@ -178,7 +191,11 @@ function createCodexAccountActivity(options = {}) {
     controller?.abort();
   }
 
-  return { snapshot, refresh, configure, dispose, observe: liveKey, multipleAccounts: () => observedKeys.size > 1 || scopePersistenceFailed };
+  function readState() {
+    try { return readStates.get(liveKey()) || null; } catch (_) { return null; }
+  }
+
+  return { readState, snapshot, refresh, configure, dispose, observe: liveKey, multipleAccounts: () => observedKeys.size > 1 || scopePersistenceFailed };
 }
 
 module.exports = { createCodexAccountActivity };

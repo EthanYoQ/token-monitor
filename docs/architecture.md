@@ -67,6 +67,14 @@ The widget runs the collector, the usage transform (`src/shared/usage/usageTrans
 - A worker that fails emits `usage-worker-failed` and falls back to the in-process collector, and later runtimes stay in-process for the rest of the process. `TOKEN_MONITOR_USAGE_WORKER=0` pins the in-process collector from the start.
 - Quit stays synchronous and does not wait for the worker, which may never get to handle its stop. Every subprocess registered through `createSubprocessTermination()` on the worker is listed in a table shared with the main thread while it runs, and `stopAll()` sends those the `SIGTERM` the in-process `stop()` would have sent. A subprocess spawned on the worker any other way would outlive a quit.
 
+## History presentation
+
+`normalizeHistory` creates compact `tokenDays` from all retained source contributions before capping the rich daily rows at 370 days. Each entry holds a date, total tokens and per-client tokens. Local cache coercion preserves this evidence. `mergeHistories` computes lifetime active days, peaks and streaks from its date union only when every participant has complete date evidence. Legacy or unavailable device history marks these metrics as retained-date results. Monthly data cannot recover missing date overlap or daily peaks.
+
+`syncPayload` removes this local evidence before device upload. Desktop `presentUsage` consumes it before returning bounded renderer history. Account projection is never persisted into collector snapshots or uploaded to a Hub. Main preview, complete history and fixed token ranges use the same account projection policy. Fixed-range device detail retains local device attribution. Remote history is fetched once per local revision when account presentation needs it, and the preview stays unavailable until that history arrives.
+
+Official Codex summary fields are separate from all-tool date metrics. Local cumulative active time remains the sum supplied by the current collector and may include overlapping work. Limits render unknown percentages without a percentage meter; an observed zero remains zero.
+
 ## Limits collector
 
 `src/shared/usage/deviceRuntime.js` runs usage and limits independently: `UsageRuntime` owns the tokscale collector, `LimitsRuntime` owns refresh timing, bounded concurrency, per-provider latest-wins lanes, deadlines, retry/backoff and `lastGood`/`lastAttempt` retention. A credential change refreshes only its limits lane and never restarts usage, unless a provider note says otherwise (Cursor forces one targeted usage sync).

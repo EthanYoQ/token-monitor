@@ -410,6 +410,13 @@ function favoriteModelOf(contributions) {
 // Three-tier output. The daily tier is capped to capDays (default 370) ending at todayKey;
 // monthly and summary are derived from the FULL (uncapped) contribution set, so the cap
 // never affects lifetime totals.
+function compactTokenDays(days) {
+  return days.map((day) => ({
+    date: day.date, tokens: num(day.tokens),
+    perClient: Object.fromEntries(Object.entries(day.perClient || {}).map(([client, value]) => [client, { tokens: num(value.tokens) }]))
+  }));
+}
+
 function normalizeHistory(graphData, options = {}) {
   const capDays = Number.isFinite(options.capDays) ? options.capDays : DEFAULT_CAP_DAYS;
   const todayKey = String(options.todayKey || localDayKey()).slice(0, 10);
@@ -433,7 +440,10 @@ function normalizeHistory(graphData, options = {}) {
   return {
     daily,
     monthly,
+    tokenDays: compactTokenDays(full),
+    coverage: { dailyComplete: true },
     summary: {
+      dateMetricsScope: 'lifetime',
       totalTokens, totalCost, activeDays, currentStreak, longestStreak,
       peakDayTokens, favoriteModel: favoriteModelOf(full), messages,
       activeTimeMs,
@@ -481,9 +491,6 @@ function mergeMonthlyMaps(histories) {
   return [...byMonth.values()].sort((a, b) => a.month.localeCompare(b.month));
 }
 
-// Combine per-device histories. daily unions by date (sum + recompute intensity); monthly
-// unions by month. Lifetime totals come from the uncapped monthly tier; daily-granularity
-// stats (active days / peak / streaks) come from the merged daily window.
 function mergeHistories(histories, options = {}) {
   const list = Array.isArray(histories) ? histories : [];
   const todayKey = String(options.todayKey || localDayKey()).slice(0, 10);
@@ -502,16 +509,22 @@ function mergeHistories(histories, options = {}) {
     for (const v of Object.values(m.perClient || {})) s += num(v.messages);
     return s;
   }, 0);
-  const activeDays = daily.reduce((s, d) => s + (num(d.tokens) > 0 ? 1 : 0), 0);
-  const peakDayTokens = daily.reduce((mx, d) => Math.max(mx, num(d.tokens)), 0);
-  const { currentStreak, longestStreak } = computeStreaks(daily, todayKey);
-  const favoriteModel = favoriteModelOf(daily);
+  const dailyComplete = list.every((history) => history?.coverage?.dailyComplete === true && Array.isArray(history.tokenDays));
+  const tokenDays = compactTokenDays(mergeDailyMaps(list.map((history) => ({ daily: history?.tokenDays || history?.daily }))));
+  const dateEvidence = dailyComplete ? tokenDays : daily;
+  const activeDays = dateEvidence.reduce((s, d) => s + (num(d.tokens) > 0 ? 1 : 0), 0);
+  const peakDayTokens = dateEvidence.reduce((mx, d) => Math.max(mx, num(d.tokens)), 0);
+  const { currentStreak, longestStreak } = computeStreaks(dateEvidence, todayKey);
+  const favoriteModel = favoriteModelOf(monthly.length ? monthly : daily);
   const activeTimeMs = activeTimeTotal(monthly.length ? monthly : daily);
 
   return {
     daily,
     monthly,
+    tokenDays,
+    coverage: { dailyComplete },
     summary: {
+      dateMetricsScope: dailyComplete ? 'lifetime' : 'retained',
       totalTokens, totalCost, activeDays, currentStreak, longestStreak,
       peakDayTokens, favoriteModel, messages, activeTimeMs
     }
@@ -524,7 +537,11 @@ function coerceHistory(raw) {
   return {
     daily: Array.isArray(src.daily) ? src.daily : [],
     monthly: Array.isArray(src.monthly) ? src.monthly : [],
-    summary: src.summary && typeof src.summary === 'object' ? src.summary : {}
+    summary: src.summary && typeof src.summary === 'object' ? src.summary : {},
+    ...(Array.isArray(src.tokenDays) ? {
+      tokenDays: src.tokenDays,
+      coverage: { dailyComplete: src.coverage?.dailyComplete === true }
+    } : {})
   };
 }
 
@@ -598,5 +615,5 @@ module.exports = {
   normalizeTokscaleModelComponentSummary, sumOutputTokens, sumTokens,
   parseGraphResult, computeIntensities, localDayKey, dayKeyAddDays,
   computeStreaks, monthlyRollup, normalizeHistory, mergeHistories,
-  coerceHistory, historyPreview, historyRevision, deviceHistoryRevision
+  coerceHistory, historyPreview, historyRevision, deviceHistoryRevision, stableRevision
 };

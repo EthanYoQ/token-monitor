@@ -753,8 +753,8 @@
   }
 
   function limitWindowNode(label, window, color, tone = 1, valueOverride = null, detailText = '') {
-    const remaining = Number(window?.remainingPercent);
-    const used = Number(window?.usedPercent);
+    const remaining = optionalFiniteNumber(window?.remainingPercent);
+    const used = optionalFiniteNumber(window?.usedPercent);
     const motionRemaining = motion.remainingPercent(window);
     const showMeter = window?.showMeter !== false;
     const hasPercent = showMeter && (Number.isFinite(remaining) || Number.isFinite(used));
@@ -803,7 +803,7 @@
     } else {
       reset.textContent = resetText;
     }
-    if (showMeter) {
+    if (hasPercent) {
       item.append(text, meter, reset);
     } else {
       item.classList.add('limit-window-note');

@@ -299,6 +299,17 @@
     { key: 'messages', kind: 'count' }
   ];
 
+  function accountStatsCards(account) {
+    if (!['applied', 'stale', 'conflict'].includes(account?.status)) return [];
+    return [
+      { key: 'currentStreakDays', kind: 'days' },
+      { key: 'longestStreakDays', kind: 'days' },
+      { key: 'peakDailyTokens', kind: 'tokens' },
+      { key: 'longestRunningTurnSec', kind: 'duration' }
+    ].map((card) => ({ ...card, value: Number.isSafeInteger(account.summary?.[card.key])
+      ? account.summary[card.key] * (card.kind === 'duration' ? 1000 : 1) : null }));
+  }
+
   function statsCards(summary) {
     const s = summary && typeof summary === 'object' ? summary : {};
     return STAT_CARDS.map((c) => ({
@@ -678,7 +689,7 @@
   }
 
   return {
-    localDayKey, weekStartKey, dailyBarsChart, candleChart, computeHeatmapIntensities, contribHeatmap, rollingYearHeatmap, statsCards, sparklinePreview,
+    localDayKey, weekStartKey, dailyBarsChart, candleChart, computeHeatmapIntensities, contribHeatmap, rollingYearHeatmap, statsCards, accountStatsCards, sparklinePreview,
     areaLineChart, areaLineSvg,
     selectPreviewSeries, patchTodayBar, sparklineSvg,
     clientColors, fallbackModelColors, modelVendorFor, modelColor, clampDaily,

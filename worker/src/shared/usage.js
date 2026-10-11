@@ -1412,7 +1412,12 @@ function aggregateHistory(devices, options = {}) {
   let reportedToday = '';
   for (const record of devices) {
     const normalized = normalizeRecordHistoryFields(record);
-    if (!hasOwn(normalized, 'history') || normalized.history === null) continue;
+    if (!hasOwn(normalized, 'history') || normalized.history === null) {
+      if (['today', 'month', 'allTime'].some((name) => Number((record.periods?.[name] || record[name])?.totalTokens || 0) > 0)) {
+        histories.push({ daily: [], monthly: [], summary: {} });
+      }
+      continue;
+    }
     histories.push(normalized.history);
     if (!normalized.history.daily.length) continue;
     const reported = calendarDayKey(normalized.periodWindows?.today?.key);

@@ -2729,7 +2729,7 @@ function fixedPeriodSources() {
 
 function buildFixedPeriodSourcesSnapshot() {
   const meta = state.fixedPeriodHistory?.fixedPeriods || {};
-  return fixedPeriodRangesApi.fixedPeriodSnapshotFromDevices(state.period, fixedPeriodSources(), {
+  return fixedPeriodRangesApi.fixedPeriodSnapshotForPresentation(state.period, fixedPeriodSources(), state.fixedPeriodHistory, {
     historyEnabled: state.settings?.historyEnabled !== false,
     historyAvailable: meta.historyTransportAvailable === true,
     todayKey: fixedPeriodTodayKey(),
@@ -2806,7 +2806,8 @@ function toolRowsForPeriod(period) {
 }
 
 function modelRowsForPeriod(period, rankingMetric = state.settings?.modelRankingMetric) {
-  const modelRows = periodAttributionRows(period, period?.models, period?.modelCosts).map(({ key: model, value, cost, unattributed }) => ({
+  const modelTotal = Object.values(period?.models || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+  const modelRows = periodAttributionRows({ ...period, totalTokens: modelTotal }, period?.models, period?.modelCosts).map(({ key: model, value, cost, unattributed }) => ({
     key: model,
     name: model === usageAttributionRowsApi.UNATTRIBUTED_KEY ? t('dashboard.tooltip.unclassified') : model,
     value,
@@ -2822,8 +2823,7 @@ function modelRowsForPeriod(period, rankingMetric = state.settings?.modelRanking
   if (modelRows.length > 0) {
     return usageAttributionRowsApi.rankRowsWithValues(modelRows, rankingMetric);
   }
-  if (Number(period?.totalTokens || 0) === 0) return [];
-  return toolRowsForPeriod(period);
+  return [];
 }
 
 function sessionRowsForPeriod(period) {
@@ -4880,6 +4880,16 @@ function signalContentReady() {
   window.tokenMonitor.signalContentReady?.();
 }
 
+function codexAccountSummaryHtml() {
+  const cards = window.TokenMonitorUsageCharts.accountStatsCards(state.stats?.codexAccountActivity);
+  if (!cards.length) return '';
+  return '<div class="trends-stats codex-account-stats">' + cards.map((card) => {
+    const value = card.value === null ? '--' : card.kind === 'duration'
+      ? formatActiveDuration(card.value) : card.kind === 'tokens' ? formatCompact(card.value) : formatNumber(card.value);
+    return `<div class="trends-stat"><span class="trends-stat-v">${value}</span><span class="trends-stat-k">${t(`usage.codexAccountActivity.${card.key}`)}</span></div>`;
+  }).join('') + '</div>';
+}
+
 function renderTrends() {
   const charts = window.TokenMonitorUsageCharts;
   const previousBars = captureTrendBarMotion();
@@ -4891,7 +4901,8 @@ function renderTrends() {
   // active-time and peak cards below still describe the selected fixed period.
   const selected = charts.selectPreviewSeries(preview, fixed?.status === 'ready' ? 'allTime' : state.period);
   const { points, metric, labelKey } = selected;
-  const finalPoints = state.period === 'today' ? charts.patchTodayBar(points, todayTotal) : points;
+  const accountBacked = ['applied', 'stale', 'conflict'].includes(state.stats?.codexAccountActivity?.status);
+  const finalPoints = state.period === 'today' && !accountBacked ? charts.patchTodayBar(points, todayTotal) : points;
 
   if (finalPoints.length === 0) {
     els.trendsPanel.innerHTML = `<div class="trends-empty">${t('trends.empty')}</div>`;
@@ -4916,10 +4927,10 @@ function renderTrends() {
   const first = trendShortLabel(finalPoints[0][labelKey], labelKey);
   const last = trendShortLabel(finalPoints[finalPoints.length - 1][labelKey], labelKey);
   const stats = [
-    [t('trends.activeDays'), formatNumber(summary.activeDays)],
+    [`${t('trends.activeDays')}${preview.summary?.dateMetricsScope === 'retained' ? ` · ${t('dashboard.scope.retained')}` : ''}`, formatNumber(summary.activeDays)],
     [t('trends.currentStreak'), formatNumber(summary.currentStreak)],
     [t('trends.activeTime'), formatActiveDuration(summary.activeTimeMs)],
-    [t('trends.peakDay'), formatCompact(summary.peakDayTokens)]
+    [`${t('trends.peakDay')}${state.period === 'allTime' && preview.summary?.dateMetricsScope === 'retained' ? ` · ${t('dashboard.scope.retained')}` : ''}`, formatCompact(summary.peakDayTokens)]
   ];
   const statsHtml = stats
     .map(([k, v]) => `<div class="trends-stat"><span class="trends-stat-v">${v}</span><span class="trends-stat-k">${k}</span></div>`)
@@ -4929,7 +4940,8 @@ function renderTrends() {
     `<div class="trends-cap"><span>${rangeLabel}</span><span class="trends-open-hint" title="${t('trends.open')}">↗</span></div>`
     + `<div class="trends-spark" role="button" tabindex="0" title="${t('trends.open')}">${svg}</div>`
     + `<div class="trends-axis"><span>${first}</span><span>${last}</span></div>`
-    + `<div class="trends-stats">${statsHtml}</div>`;
+    + `<div class="trends-stats">${statsHtml}</div>`
+    + codexAccountSummaryHtml();
   const bars = Array.from(els.trendsPanel.querySelectorAll('.spark-bar'));
   bars.forEach((bar, index) => {
     bar.dataset.motionKey = String(finalPoints[index]?.[labelKey] || index);
@@ -5114,7 +5126,7 @@ function fixedPeriodTodayKey() {
 
 function fixedPeriodHistorySignature() {
   const inventory = fixedPeriodRangesApi.deviceInventorySignature(state.stats?.devices || []);
-  const revision = state.stats?.deviceHistoryRevision || state.stats?.historyRevision || '';
+  const revision = `${state.stats?.historyRevision || ''}:${state.stats?.deviceHistoryRevision || ''}`;
   return `${String(revision)}:${fixedPeriodTodayKey()}:${inventory}`;
 }
 
@@ -5684,8 +5696,8 @@ function renderHomeLimitModule() {
 }
 
 function renderHomeModelModule(period) {
-  const { module, body } = homeModuleShell('model', t('home.models'), 'model');
-  const rows = homeOverviewApi.homeModelRows(modelRowsForPeriod(period, 'tokens'), period?.totalTokens, 5);
+  const { module, body } = homeModuleShell('model', t('home.models'), 'model', t('dashboard.scope.localModels'));
+  const rows = homeOverviewApi.homeModelRows(modelRowsForPeriod(period, 'tokens'), 5);
   if (rows.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'home-module-empty';
@@ -6119,7 +6131,8 @@ function renderHomeTrendsModule() {
   // The key must be the LOCAL day: the period being patched in is local-day scoped.
   const today = charts.localDayKey();
   const todayPeriod = state.stats?.periods?.today;
-  const points = homeOverviewApi.patchDailyToday(
+  const accountBacked = ['applied', 'stale', 'conflict'].includes(state.stats?.codexAccountActivity?.status);
+  const points = accountBacked ? rawDaily : homeOverviewApi.patchDailyToday(
     rawDaily,
     today,
     Number(todayPeriod?.totalTokens || 0),
@@ -6137,7 +6150,7 @@ function renderHomeTrendsModule() {
     cell: activityLayout.cell,
     gap: activityLayout.gap
   });
-  const summaryActiveDays = state.stats?.historyPreview?.summary?.activeDays;
+  const summaryActiveDays = history.summary?.activeDays;
   const activeDaysWindow = state.settings?.homeActiveDaysWindow || 'all';
   const displayActiveDays = activeDaysWindow === 'year'
     ? activity.cells.filter((cell) => cell.tokens > 0).length
@@ -6146,7 +6159,7 @@ function renderHomeTrendsModule() {
         : activity.cells.filter((cell) => cell.tokens > 0).length);
   const activeDaysLabel = activeDaysWindow === 'year'
     ? t('home.activeDaysYear', { count: displayActiveDays })
-    : t('home.activeDays', { count: displayActiveDays });
+    : t(history.summary?.dateMetricsScope === 'retained' ? 'home.activeDaysRetained' : 'home.activeDays', { count: displayActiveDays });
   const { module, body } = homeModuleShell('trends', t('home.activity'), 'trends', activeDaysLabel);
   const activityScroll = document.createElement('div');
   activityScroll.className = 'home-activity-scroll';
@@ -6198,6 +6211,12 @@ function renderHomeTrendsModule() {
     dates.append(label);
   }
   body.append(activityScroll, trendHead, plot, dates);
+  const accountSummary = codexAccountSummaryHtml();
+  if (accountSummary) {
+    const accountStats = document.createElement('div');
+    accountStats.innerHTML = accountSummary;
+    body.append(accountStats);
+  }
   setupHomeActivityScroller(activityScroll, () => {
     // The scroller is now laid out and has its saved/right-edge position. Reconnect
     // an active hover only after that geometry is stable; otherwise the replacement
@@ -6295,14 +6314,15 @@ function render() {
   const period = state.stats.periods?.[state.period] || { totalTokens: 0, costUsd: 0, clients: {} };
   const fixedUnavailable = derivedPeriod && state.fixedPeriodSnapshot?.status !== 'ready';
   if (els.codexAccountActivityNote) {
-    const activity = ['today', 'month', 'allTime'].includes(state.period) ? state.stats.codexAccountActivity : null;
+    const activity = state.stats.codexAccountActivity;
     const attribution = activity?.periods?.[state.period];
     const activityMessageKeys = {
       applied: 'usage.codexAccountActivity.applied',
       conflict: 'usage.codexAccountActivity.conflict',
       stale: 'usage.codexAccountActivity.stale',
       'scope-unverified': 'usage.codexAccountActivity.scopeUnverified',
-      'range-unverified': 'usage.codexAccountActivity.rangeUnverified'
+      'range-unverified': 'usage.codexAccountActivity.rangeUnverified',
+      unavailable: 'usage.codexAccountActivity.readFailed'
     };
     els.codexAccountActivityNote.classList.toggle('hidden', !activity);
     const notes = [];
@@ -6319,6 +6339,8 @@ function render() {
     } else if (activity) {
       notes.push(t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified']));
     }
+    if (activity?.periods?.today?.headlineSource === 'local') notes.push(t('usage.codexAccountActivity.historyLag'));
+    if (activity?.readStatus && activity.readStatus !== 'available') notes.push(t('usage.codexAccountActivity.readFailed'));
     if (activity?.fetchedAt) notes.push(t('usage.codexAccountActivity.lastRead', {
       date: new Date(activity.fetchedAt).toLocaleString(currentLocale())
     }));
@@ -6592,7 +6614,7 @@ async function refreshStats(options = {}) {
       });
     }
     maybeUpdateBarsIcon();
-    if (feedback) settleRefreshButtonState('refreshed');
+    if (feedback) settleRefreshButtonState(nextStats.codexAccountActivity?.readStatus && nextStats.codexAccountActivity.readStatus !== 'available' ? 'error' : 'refreshed');
   } catch (error) {
     // The dot colour shows the offline state and the reason lives in the
     // live-dot tooltip + sync settings line, so keep the header status pill

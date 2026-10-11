@@ -655,6 +655,14 @@
     };
   }
 
+  function fixedPeriodSnapshotForPresentation(selection, sources, history, options = {}) {
+    const local = fixedPeriodSnapshotFromDevices(selection, sources, options);
+    if (local.status !== 'ready') return local;
+    if (!['applied', 'stale', 'conflict'].includes(history?.codexAccountActivity?.status)) return local;
+    const presented = fixedPeriodSnapshot(selection, { ...options, daily: history.daily, todayPeriod: null });
+    return { ...presented, devices: local.devices || [], codexAccountActivity: history.codexAccountActivity };
+  }
+
   function fixedPeriodDeviceSnapshots(selection, sources, options = {}) {
     return fixedPeriodSnapshotFromDevices(selection, sources, options).devices || [];
   }
@@ -678,6 +686,7 @@
     fixedPeriodDeviceSnapshots,
     fixedPeriodSnapshot,
     fixedPeriodSnapshotFromDevices,
+    fixedPeriodSnapshotForPresentation,
     isDerived,
     joinDeviceHistorySources,
     localDayKey,

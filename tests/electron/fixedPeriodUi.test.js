@@ -45,7 +45,7 @@ test('fixed-period menu follows the glass theme and keeps labels left aligned', 
   assert.match(app, /setPeriodMenuOpen\(true, \{ focus: event\.key === 'ArrowUp' \? 'last' : 'first' \}\)/);
   assert.match(app, /deviceHistoriesAvailable: Array\.isArray\(state\.fixedPeriodHistory\?\.deviceHistories\)/);
   assert.match(app, /getDashboardHistory\(\{ includeDevices: true \}\)/);
-  assert.match(app, /state\.stats\?\.deviceHistoryRevision \|\| state\.stats\?\.historyRevision/);
+  assert.match(app, /const revision = `\$\{state\.stats\?\.historyRevision[^\n]*deviceHistoryRevision/);
   assert.match(app, /deviceInventorySignature\(state\.stats\?\.devices \|\| \[\]\)/);
   assert.match(app, /FIXED_PERIOD_HISTORY_MAX_RETRIES = 3/);
   assert.match(app, /fixedPeriodHistoryInventoriesMatch\(fetchedHistory\)/);
@@ -61,14 +61,14 @@ test('fixed-period menu follows the glass theme and keeps labels left aligned', 
   assert.doesNotMatch(loader, /status: 'loading'[\s\S]*?if \(fixedPeriodRangesApi\.isDerived\(state\.period\)\) render\(\);/);
   assert.match(app, /createLatestRequestCoordinator\(\{/);
   assert.match(app, /function currentCalendarLocale\(\)[\s\S]*?resolveRegionalLocale\(\[\.\.\.preferredLanguages\(\), state\.settings\?\.locale\]\)/);
-  assert.match(app, /fixedPeriodSnapshotFromDevices\(state\.period, fixedPeriodSources\(\), \{[\s\S]*?locale: currentCalendarLocale\(\)/);
+  assert.match(app, /fixedPeriodSnapshotForPresentation\(state\.period, fixedPeriodSources\(\), state\.fixedPeriodHistory, \{[\s\S]*?locale: currentCalendarLocale\(\)/);
   assert.match(app, /force: forceFixedPeriodHistory,[\s\S]*?retryFailed: forceFixedPeriodHistory/);
   assert.match(app, /isDerived\(next\) && state\.fixedPeriodHistoryFailed[\s\S]*?warmFixedPeriodHistory\(\{ retryFailed: true, renderOnComplete: true \}\)/);
   assert.match(app, /fixedPeriodHistorySignature !== signature[\s\S]*?\|\| state\.fixedPeriodHistoryBusy\) \{[\s\S]*?void loadFixedPeriodHistory\(\);/);
   assert.match(boot, /\['today', 'month', 'week', 'last7', 'last30', 'allTime'\]\.includes\(period\)/);
   assert.match(app, /function fixedPeriodDevices\(\)/);
   assert.match(app, /devicesForReadySnapshot\(state\.fixedPeriodSnapshot, state\.period\)/);
-  assert.match(app, /fixedPeriodSnapshotFromDevices\(state\.period, fixedPeriodSources\(\)/);
+  assert.match(app, /fixedPeriodSnapshotForPresentation\(state\.period, fixedPeriodSources\(\)/);
   const snapshotBuilder = app.slice(app.indexOf('function buildFixedPeriodSnapshot()'), app.indexOf('async function loadFixedPeriodHistory'));
   assert.ok(snapshotBuilder.indexOf('historyEnabled === false') < snapshotBuilder.indexOf('fixedPeriodHistoryRequested'));
   assert.match(snapshotBuilder, /readySnapshotForSelection\([\s\S]*?state\.fixedPeriodSnapshot,[\s\S]*?state\.period/);

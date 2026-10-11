@@ -26,7 +26,7 @@ const motionPreferenceApi = require('./motionPreference');
 const { clearBackgroundImage, getBackgroundImage, importBackgroundImage } = require('./backgroundImage');
 const { createClientSourceIpcHandlers } = require('./clientSourceIpc');
 const { createCodexAccountActivity } = require('./codexAccountActivity');
-const { applyAccountActivityToStats, projectAccountActivityToHistory, isAccountActivityStale } = require('../shared/providers/codex/accountActivity');
+const { presentUsage, isAccountActivityStale } = require('../shared/providers/codex/accountActivity');
 const { createMainWindowAutoHide } = require('./mainWindowAutoHide');
 const { isOtherAppFullscreen } = require('./windowsForegroundFullscreen');
 const { createClaudeWebFetch } = require('./providers/claude/webFetch');
@@ -2823,9 +2823,12 @@ function applyNativeMaterial(source = settings) {
   // handles setting changes. The macOS manager avoids recreating stable views.
 }
 
+const presentationHistories = new WeakMap();
+
 function withHistoryPreview(stats, devices) {
   const historyDevices = settings?.historyEnabled === false ? [] : devices;
   const history = aggregateHistory(historyDevices);
+  presentationHistories.set(stats, history);
   stats.historyPreview = historyPreview(history);
   stats.historyRevision = historyRevision(history);
   stats.deviceHistoryRevision = deviceHistoryRevision(historyDevices);
@@ -2895,6 +2898,38 @@ function syncProvenanceActive() {
 }
 
 const presentationCache = createStatsPresentationCache();
+let remotePresentationHistory = { key: '', history: null };
+let remotePresentationHistoryRequest = '';
+let remotePresentationHistoryRetry = { key: '', notBefore: 0 };
+
+function presentationHistoryForStats(stats) {
+  if (!stats || settings?.historyEnabled === false) return null;
+  const held = presentationHistories.get(stats);
+  if (held) return held;
+  const options = historyResolverOptions();
+  const source = completeHistorySource(options);
+  if (source === 'local') return aggregateHistory(options.localDevice ? [options.localDevice] : []);
+  if (source === 'embedded') return embeddedHub.hub.getHistory();
+  if (source !== 'remote') return null;
+  const key = `${hubModeGeneration}:${stats.historyRevision || ''}`;
+  if (remotePresentationHistory.key === key) return remotePresentationHistory.history;
+  if (remotePresentationHistoryRequest !== key
+    && (remotePresentationHistoryRetry.key !== key || Date.now() >= remotePresentationHistoryRetry.notBefore)) {
+    remotePresentationHistoryRequest = key;
+    resolveCompleteHistoryWithDevices(options).then(({ history }) => {
+      if (remotePresentationHistoryRequest !== key) return;
+      remotePresentationHistory = { key, history };
+      if (latestStats) sendPush({ event: 'stats', data: { type: 'stats', reason: 'presentation', stats: latestStats } }, { skipExport: true });
+    }).catch((error) => {
+      if (remotePresentationHistoryRequest === key) {
+        remotePresentationHistoryRequest = '';
+        remotePresentationHistoryRetry = { key, notBefore: Date.now() + 15_000 };
+      }
+      console.warn(`[codex-account-history] ${error.message}`);
+    });
+  }
+  return null;
+}
 
 // Every input besides `stats` belongs in the cache key, or a settings change
 // would keep serving the projection it replaced.
@@ -2912,14 +2947,18 @@ function electronPresentationStats(stats) {
   const nowMs = Date.now();
   const selectedDate = snapshot ? localDayKey(new Date(nowMs)) : null;
   const snapshotStale = snapshot ? isAccountActivityStale(snapshot, nowMs) : false;
+  const localHistory = snapshot ? presentationHistoryForStats(stats) : null;
+  const readState = settings?.codexAccountActivityEnabled === true && codexSelected ? codexAccountActivity.readState() : null;
   const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null, settings?.allTimeSince,
     settings?.codexAccountActivityEnabled, snapshot?.fetchedAt, snapshot?.lifetimeTokens,
     snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale,
-    selectedDate, selectedDate?.slice(0, 7)]);
+    selectedDate, selectedDate?.slice(0, 7), snapshot, readState, localHistory ? historyRevision(localHistory) : null]);
   return presentationCache.get(stats, key, () => projectModelAliasStats(
     projectLimitStatsForDisplay(snapshot
-      ? applyAccountActivityToStats(stats, snapshot, settings?.allTimeSince, settings?.deviceId, singleCodexAccount, nowMs)
-      : stats, limitOptions),
+      ? presentUsage({ localStats: stats, localHistory, account: snapshot, allTimeSince: settings?.allTimeSince,
+        localDeviceId: settings?.deviceId, singleAccount: singleCodexAccount, nowMs }).stats
+      : readState && readState.readStatus !== 'available'
+        ? { ...stats, codexAccountActivity: { status: 'unavailable', ...readState } } : stats, limitOptions),
     aliases,
     { grouping }
   ));
@@ -4974,7 +5013,7 @@ function refreshEdgeDockDerivedPeriods(visibleStats) {
     todayKey,
     settings?.historyEnabled !== false,
     fixedPeriodRangesApi.deviceInventorySignature(visibleStats.devices || []),
-    visibleStats.deviceHistoryRevision || visibleStats.historyRevision || ''
+    `${visibleStats.historyRevision || ''}:${visibleStats.deviceHistoryRevision || ''}`
   ].join('|');
   if (signature === edgeDockDerivedSignature) return;
   edgeDockDerivedSignature = signature;
@@ -4986,7 +5025,7 @@ function refreshEdgeDockDerivedPeriods(visibleStats) {
       const preferred = typeof app.getPreferredSystemLanguages === 'function' ? app.getPreferredSystemLanguages() : [app.getLocale()];
       const next = {};
       for (const selection of selections) {
-        const snapshot = fixedPeriodRangesApi.fixedPeriodSnapshotFromDevices(selection, sources, {
+        const snapshot = fixedPeriodRangesApi.fixedPeriodSnapshotForPresentation(selection, sources, history, {
           historyEnabled: settings?.historyEnabled !== false,
           historyAvailable: history?.fixedPeriods?.historyTransportAvailable === true,
           todayKey,
@@ -6686,14 +6725,22 @@ async function getDashboardHistory(options = {}) {
     : { history: await getCompleteHistory(), deviceHistories: undefined };
   const history = resolved.history;
   const source = completeHistorySource(historyResolverOptions());
-  const accountSnapshot = settings?.historyEnabled !== false && settings?.codexAccountActivityEnabled === true && latestStats
+  if (source === 'remote') remotePresentationHistory = { key: `${hubModeGeneration}:${latestStats?.historyRevision || ''}`, history };
+  const accountSnapshot = settings?.historyEnabled !== false && settings?.codexAccountActivityEnabled === true
+    && String(settings?.clients || '').split(',').includes('codex') && latestStats
     ? codexAccountActivity.snapshot() : null;
-  const accountHistory = accountSnapshot
-    ? projectAccountActivityToHistory(history, accountSnapshot, electronPresentationStats(latestStats))
-    : history;
+  const accountHistory = presentUsage({
+    localStats: latestStats, localHistory: history, account: accountSnapshot,
+    allTimeSince: settings?.allTimeSince, localDeviceId: settings?.deviceId,
+    singleAccount: !accountSnapshot || !codexAccountActivity.multipleAccounts()
+  }).history || history;
   return projectModelAliasHistory({
     ...accountHistory,
-    ...(includeDevices ? { deviceHistories: resolved.deviceHistories } : {}),
+    ...(includeDevices ? { deviceHistories: resolved.deviceHistories?.map((device) => {
+      if (!device.history) return device;
+      const { tokenDays: _tokenDays, coverage: _coverage, ...history } = device.history;
+      return { ...device, history };
+    }) } : {}),
     fixedPeriods: fixedPeriodHistoryMeta({
       source
     })
@@ -7358,9 +7405,13 @@ app.whenReady().then(() => {
     return true;
   });
   ipcMain.handle('stats:get', async (_event, options) => {
+    if (options?.forceHistory === true) {
+      remotePresentationHistoryRequest = '';
+      remotePresentationHistoryRetry = { key: '', notBefore: 0 };
+    }
     const [stats] = await Promise.all([
       fetchStats(options),
-      options?.forceHistory === true ? codexAccountActivity.refresh({ force: true }) : null
+      options?.force === true || options?.forceHistory === true ? codexAccountActivity.refresh({ force: true }) : null
     ]);
     // The stream normally carries the stamp, but it is precisely when the stream
     // is down that this read is the only thing still arriving from the hub.
