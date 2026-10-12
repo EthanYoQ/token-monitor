@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
 const { fetchCursorLimits } = require('../../src/shared/limits/collector');
@@ -280,4 +281,50 @@ test('fetchCursorLimits includes team pool when Cursor reports pooled usage', as
   assert.equal(pool.used, 127251.35);
   assert.equal(pool.limit, 281220);
   assert.equal(pool.remaining, 153968.65);
+});
+
+for (const [label, usage] of [
+  ['personal on-demand', { onDemandLimitUsd: 100 }],
+  ['team on-demand', { teamOnDemandLimitUsd: 100 }],
+  ['team pool', { teamPooledLimitUsd: 100 }]
+]) {
+  test(`fetchCursorLimits keeps ${label} usage unknown when only its limit is reported`, async () => {
+    const provider = await fetchCursorLimits({}, {
+      readActiveAccount: () => ({ id: 'acct-1', sessionToken: 't' }),
+      probe: async () => ({ ok: true, usage })
+    });
+    assert.equal(provider.windows.length, 1);
+    const window = provider.windows[0];
+    assert.equal(window.limit, 100);
+    assert.equal(window.used ?? null, null);
+    assert.equal(window.remaining, null);
+    assert.equal(window.usedPercent, null);
+  });
+}
+
+test('fetchCursorLimits keeps usage unknown through the HTTP summary path', async () => {
+  const provider = await fetchCursorLimits({}, {
+    readActiveAccount: () => ({ id: 'acct-1', sessionToken: 't' }),
+    httpsLib: {
+      request(options, callback) {
+        const response = new EventEmitter();
+        response.statusCode = 200;
+        const payload = options.path === '/api/usage-summary'
+          ? { individualUsage: { onDemand: { limit: 10000 } }, teamUsage: { pooled: { limit: 20000 } } }
+          : {};
+        process.nextTick(() => {
+          callback(response);
+          response.emit('data', Buffer.from(JSON.stringify(payload)));
+          response.emit('end');
+        });
+        return { on() {}, end() {}, write() {}, setTimeout() {} };
+      }
+    }
+  });
+  assert.deepEqual(provider.windows.map((window) => [
+    window.label, window.used, window.limit, window.remaining, window.usedPercent
+  ]), [
+    ['Team pool', null, 200, null, null],
+    ['On-demand spend', null, 100, null, null]
+  ]);
 });

@@ -96,7 +96,7 @@ function parseUsageSummary(input, { requestUsage = null } = {}) {
   const overallRemaining = numberOrNull(overall.remaining);
   const autoPercent = clampPercent(numberOrNull(plan.autoPercentUsed));
   const apiPercent = clampPercent(numberOrNull(plan.apiPercentUsed));
-  const onDemandUsed = numberOrNull(onDemand.used) ?? 0;
+  const onDemandUsed = numberOrNull(onDemand.used);
   const onDemandLimit = numberOrNull(onDemand.limit);
   const onDemandRemaining = numberOrNull(onDemand.remaining);
   const teamOnDemandUsed = numberOrNull(teamOnDemand.used);
@@ -138,7 +138,7 @@ function parseUsageSummary(input, { requestUsage = null } = {}) {
     planLimitUsd: centsToUsd(resolvedPlanLimit),
     planRemainingUsd: resolvedPlanRemaining === null ? null : centsToUsd(resolvedPlanRemaining),
     onDemandPercent: percentFromUsedLimit(onDemandUsed, onDemandLimit),
-    onDemandUsedUsd: centsToUsd(onDemandUsed),
+    onDemandUsedUsd: onDemandUsed === null ? null : centsToUsd(onDemandUsed),
     onDemandLimitUsd: onDemandLimit === null ? null : centsToUsd(onDemandLimit),
     onDemandRemainingUsd: onDemandRemaining === null ? null : centsToUsd(onDemandRemaining),
     teamOnDemandPercent: percentFromUsedLimit(teamOnDemandUsed, teamOnDemandLimit),

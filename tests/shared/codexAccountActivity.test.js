@@ -12,7 +12,8 @@ const {
   normalizeAccountActivity,
   selectAccountActivity,
   applyAccountActivityToStats: applyAccountActivityToStatsRaw,
-  projectAccountActivityToHistory
+  projectAccountActivityToHistory,
+  presentUsage
 } = require('../../src/shared/providers/codex/accountActivity');
 const { localDayKey } = require('../../src/shared/history');
 const { createStatsPresentationCache } = require('../../src/electron/statsPublisher');
@@ -370,13 +371,15 @@ test('Home selects local date names without shifting official buckets and invali
     const body = source.match(/function electronPresentationStats\([^]*?\n\}/)[0];
     let nowMs = Date.parse('2026-09-30T15:59:30Z');
     class ClockDate extends Date { static now() { return nowMs; } }
-    const project = vm.runInNewContext(`(${body})`, {
+    const capture = source.match(/function captureAccountUsagePresentation\([^]*?\n\}/)?.[0];
+    const project = vm.runInNewContext(`${capture || ''}\n(${body})`, {
       settings: { clients: 'codex,claude', codexAccountActivityEnabled: true, allTimeSince: '2024-01-01' },
-      codexAccountActivity: { snapshot: () => snapshot, multipleAccounts: () => false },
+      codexAccountActivity: { snapshot: () => snapshot, multipleAccounts: () => false, readState: () => null },
       syncProvenanceActive: () => false,
       localDayKey,
       isAccountActivityStale: () => false,
-      applyAccountActivityToStats: applyAccountActivityToStatsRaw,
+      presentUsage,
+      presentationHistoryForStats: () => null,
       projectLimitStatsForDisplay: (value) => value,
       projectModelAliasStats: (value) => value,
       presentationCache: createStatsPresentationCache(),
@@ -469,7 +472,7 @@ test('dashboard account history leaves unverified scope and ambiguous local days
   assert.equal(projectAccountActivityToHistory(history, snapshot, presented), history);
 });
 
-test('stale account history preserves the locally verified streaks', () => {
+test('stale account history derives union streaks from the same displayed dates', () => {
   const raw = activity(100, '2026-09-28');
   raw.codexAccountActivity.dailyUsageBuckets = [
     { startDate: '2026-09-27', tokens: 50 },
@@ -485,11 +488,11 @@ test('stale account history preserves the locally verified streaks', () => {
     status: 'stale', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens
   } };
   const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
-  assert.equal(projected.summary.currentStreak, 1);
-  assert.equal(projected.summary.longestStreak, 1);
+  assert.equal(projected.summary.currentStreak, 2);
+  assert.equal(projected.summary.longestStreak, 2);
 });
 
-test('conflicting account history preserves its status and locally verified streaks', () => {
+test('conflicting account history preserves status and derives its displayed union streaks', () => {
   const raw = activity(100, '2026-09-28');
   raw.codexAccountActivity.dailyUsageBuckets = [
     { startDate: '2026-09-27', tokens: 50 }, { startDate: '2026-09-28', tokens: 50 }
@@ -504,11 +507,11 @@ test('conflicting account history preserves its status and locally verified stre
   } };
   const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
   assert.equal(projected.codexAccountActivity.status, 'conflict');
-  assert.equal(projected.summary.currentStreak, 1);
-  assert.equal(projected.summary.longestStreak, 1);
+  assert.equal(projected.summary.currentStreak, 2);
+  assert.equal(projected.summary.longestStreak, 2);
 });
 
-test('applied account Dashboard days use the account UTC boundary while stale days stay local', () => {
+test('account dates remain intact while union current streak uses the local selected day', () => {
   const previousTz = process.env.TZ;
   process.env.TZ = 'America/Los_Angeles';
   try {
@@ -529,20 +532,20 @@ test('applied account Dashboard days use the account UTC boundary while stale da
     const presented = { periods: { allTime: { totalTokens: 100 } }, codexAccountActivity: { ...account, status: 'applied' } };
     const applied = projectAccountActivityToHistory(history, snapshot, presented, { nowMs });
     assert.deepEqual(applied.daily.map((row) => row.date), ['2026-10-01', '2026-10-02']);
-    assert.equal(applied.summary.currentStreak, 2);
+    assert.equal(applied.summary.currentStreak, 1);
     const stale = projectAccountActivityToHistory(history, snapshot, {
       ...presented, codexAccountActivity: { ...account, status: 'stale' }
     }, { nowMs });
-    assert.deepEqual(stale.daily.map((row) => row.date), ['2026-10-01']);
+    assert.deepEqual(stale.daily.map((row) => row.date), ['2026-10-01', '2026-10-02']);
     const overridden = projectAccountActivityToHistory(history, snapshot, presented, { nowMs, todayKey: '2026-10-01' });
-    assert.deepEqual(overridden.daily.map((row) => row.date), ['2026-10-01']);
+    assert.deepEqual(overridden.daily.map((row) => row.date), ['2026-10-01', '2026-10-02']);
   } finally {
     if (previousTz === undefined) delete process.env.TZ;
     else process.env.TZ = previousTz;
   }
 });
 
-test('account activity exposes a streak through yesterday without changing local history', () => {
+test('missing official streak remains unavailable regardless of inferred positive bucket runs', () => {
   const raw = activity(67_570, '2026-09-25');
   raw.codexAccountActivity.fetchedAt = '2026-09-28T00:00:00Z';
   raw.codexAccountActivity.dailyUsageBuckets = [
@@ -552,13 +555,13 @@ test('account activity exposes a streak through yesterday without changing local
   ];
   const shown = applyAccountActivityToStats(stats(), normalizeAccountActivity(raw, 'account-a'),
     '2024-01-01', '', true, Date.parse('2026-09-28T00:10:00Z'));
-  assert.equal(shown.codexAccountActivity.currentStreak, 3);
-  assert.equal(shown.historyPreview, undefined);
+  assert.equal(shown.codexAccountActivity.summary.currentStreakDays, null);
+  assert.deepEqual(shown.historyPreview, { daily: [], monthly: [], summary: {} });
   raw.codexAccountActivity.dailyUsageBuckets[1].tokens = 0;
   raw.codexAccountActivity.dailyUsageBuckets[2].tokens += 20_000;
   const gap = applyAccountActivityToStats(stats(), normalizeAccountActivity(raw, 'account-a'),
     '2024-01-01', '', true, Date.parse('2026-09-28T00:10:00Z'));
-  assert.equal(gap.codexAccountActivity.currentStreak, 1);
+  assert.equal(gap.codexAccountActivity.summary.currentStreakDays, null);
 });
 
 test('incomplete daily buckets and a later requested start date cannot be advertised as account-wide', () => {
@@ -737,4 +740,39 @@ test('malformed persisted bucket cannot crash snapshot reading', () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test('unavailable account reads retain summary, expose failure, and recover on automatic and manual refresh', async (t) => {
+  let reads = 0;
+  const valid = activity();
+  valid.codexAccountActivity.currentStreakDays = 100;
+  valid.codexAccountActivity.longestRunningTurnSec = 93962;
+  const errors = [];
+  const { reader, advance, filePath } = readerFixture(t, {
+    readActivity: () => { reads++; return reads === 2 ? { codexAccountActivity: { status: 'unsupportedCli' } } : valid; },
+    onError: (error) => errors.push(error.message)
+  });
+  reader.configure({ enabled: true, selected: true });
+  await reader.refresh();
+  const original = reader.snapshot();
+  assert.equal(original.summary.currentStreakDays, 100);
+  advance(15 * 60000);
+  await reader.refresh();
+  const failed = reader.snapshot();
+  assert.equal(failed.lifetimeTokens, original.lifetimeTokens);
+  assert.equal(failed.summary.longestRunningTurnSec, 93962);
+  assert.equal(failed.readStatus, 'unsupportedCli');
+  assert.equal(errors.length, 1);
+  const statsBefore = presentUsage({ localStats: stats(), account: original, allTimeSince: '2024-01-01' }).stats;
+  const statsAfter = presentUsage({ localStats: stats(), account: failed, allTimeSince: '2024-01-01' }).stats;
+  assert.notEqual(statsBefore.historyRevision, statsAfter.historyRevision);
+  advance(15 * 60000);
+  await reader.refresh();
+  assert.equal(reader.snapshot().readStatus, 'available');
+  await reader.refresh({ force: true });
+  assert.equal(reads, 4);
+  const restarted = createCodexAccountActivity({ filePath, readIdentity: () => ({ accountKey: 'account-a' }) });
+  t.after(() => restarted.dispose());
+  assert.equal(restarted.snapshot().summary.currentStreakDays, 100);
 });

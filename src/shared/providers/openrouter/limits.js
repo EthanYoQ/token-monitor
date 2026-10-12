@@ -5,6 +5,7 @@ const { hashKey } = require('../../hashKey');
 const { normalizeLimitProvider } = require('../../limits/core');
 const {
   cleanSecret,
+  numberOrNull: finiteNumber,
   statusForHttp
 } = require('../../limits/providerHelpers');
 const { normalizeNamedProfileName } = require('../../namedProfile');
@@ -17,13 +18,6 @@ function openrouterToken(env = process.env, explicitKey = '') {
   return cleanSecret(explicitKey)
     || cleanSecret(env.TOKEN_MONITOR_OPENROUTER_API_KEY)
     || cleanSecret(env.OPENROUTER_API_KEY);
-}
-
-function finiteNumber(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string' && value.trim() === '') return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function openrouterProfileName(value) {
@@ -157,7 +151,7 @@ async function fetchOpenRouterAccount(name, apiKey, deps = {}) {
           ? 'Pay-as-you-go'
           : '',
     source: 'api',
-    status: 'ok',
+    status: windows.length > 0 || Object.values(spend).some((value) => value !== null) ? 'ok' : 'unavailable',
     updatedAt,
     windows,
     balance: {

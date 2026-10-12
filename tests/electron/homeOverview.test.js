@@ -447,7 +447,7 @@ test('homeModelRows returns one-line token shares without cost fields', () => {
     { name: 'claude-opus-4-8', value: 34_000_000, cost: 21.96, color: '#cc7c5e' },
     { name: 'gpt-5.5', value: 29_800_000, cost: 25.88, color: '#49a3b0' },
     { name: 'cost-only', value: 0, cost: 3.25, color: '#9aa0aa' }
-  ], 63_800_000);
+  ]);
 
   assert.deepEqual(rows, [
     { key: 'claude-opus-4-8', name: 'claude-opus-4-8', value: 34_000_000, share: 34_000_000 / 63_800_000, color: '#cc7c5e' },
@@ -691,13 +691,13 @@ test('Activity keeps long-term day and streak stats while range-shaping time and
   });
 });
 
-test('Activity uses verified Codex account streak when local history omits account days', () => {
+test('Activity keeps the all-tool union streak separate from official Codex summary', () => {
   const input = {
     period: 'allTime',
     historySummary: { activeDays: 80, currentStreak: 80, activeTimeMs: 100, peakDayTokens: 100 },
     codexAccountActivity: { status: 'applied', currentStreak: 87 }
   };
-  assert.equal(activityStatsForPeriod(input).currentStreak, 87);
+  assert.equal(activityStatsForPeriod(input).currentStreak, 80);
   assert.equal(activityStatsForPeriod({ ...input,
     historySummary: { ...input.historySummary, currentStreak: 90 }
   }).currentStreak, 90);

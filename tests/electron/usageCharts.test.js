@@ -387,11 +387,21 @@ test('selectPreviewSeries maps period to the right points', () => {
   assert.equal(day.points.length, 7);                       // last 7 daily
   assert.deepEqual(day.points.map((p) => p.date), ['2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07', '2026-06-08']);
 
-  const month = selectPreviewSeries(PREVIEW, 'month');
+  const month = selectPreviewSeries(PREVIEW, 'month', '2026-06-08');
   assert.deepEqual(month.points.map((p) => p.date), ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07', '2026-06-08']);
 
   const total = selectPreviewSeries(PREVIEW, 'allTime');
   assert.deepEqual(total.points.map((p) => p.month), ['2026-05', '2026-06']);
+});
+
+test('monthly preview selects the current local month even when it has no observations', () => {
+  assert.deepEqual(selectPreviewSeries(PREVIEW, 'month', '2026-07-01').points, []);
+  const preview = { daily: [
+    { date: '2026-07-01', tokens: 10 },
+    { date: '2026-06-30', tokens: 20 },
+    { date: '2026-08-01', tokens: 30 }
+  ] };
+  assert.deepEqual(selectPreviewSeries(preview, 'month', '2026-07-31').points, [preview.daily[0]]);
 });
 
 test('patchTodayBar updates the local today row without mutating history', () => {

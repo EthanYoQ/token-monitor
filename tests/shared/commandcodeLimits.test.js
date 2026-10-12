@@ -214,6 +214,25 @@ test('parseCommandcodeCredits accepts snake_case and rejects a missing grant', (
   assert.throws(() => parseCommandcodeCredits({ credits: {} }), /missing monthlyCredits/);
 });
 
+test('parseCommandcodeCredits keeps unknown rolling usage distinct from zero', () => {
+  for (const used of [null, undefined, '', 'bad', false]) {
+    const parsed = parseCommandcodeCredits({
+      credits: { monthlyCredits: 100, windowLimits: { fiveHour: { cap: 100, used } } }
+    });
+    assert.deepEqual(
+      [parsed.fiveHour.used, parsed.fiveHour.limit, parsed.fiveHour.remaining, parsed.fiveHour.usedPercent],
+      [null, 100, null, null]
+    );
+  }
+  const parsed = parseCommandcodeCredits({
+    credits: { monthlyCredits: 100, windowLimits: { fiveHour: { cap: 100, used: 0 } } }
+  });
+  assert.deepEqual(
+    [parsed.fiveHour.used, parsed.fiveHour.remaining, parsed.fiveHour.usedPercent],
+    [0, 100, 0]
+  );
+});
+
 test('parseCommandcodeSubscription separates the free tier from a failed envelope', () => {
   const parsed = parseCommandcodeSubscription(SUBSCRIPTION_BODY);
   assert.equal(parsed.planId, 'individual-go');

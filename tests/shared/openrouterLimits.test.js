@@ -274,3 +274,25 @@ test('both endpoints rejecting a key surfaces unauthorized', async () => {
   });
   assert.equal(provider.status, 'unauthorized');
 });
+
+test('OpenRouter rejects successful HTTP responses without usable quota or spend data', async () => {
+  for (const body of [{}, { data: {} }, { data: { total_credits: false, total_usage: [], usage: false } }]) {
+    const [provider] = await fetchOpenRouterLimits({}, {
+      env: { OPENROUTER_API_KEY: 'sk-test' },
+      fetch: async () => response(200, body)
+    });
+    assert.equal(provider.status, 'unavailable');
+    assert.deepEqual(provider.windows, []);
+  }
+});
+
+test('OpenRouter preserves zero spend when credits are forbidden', async () => {
+  const [provider] = await fetchOpenRouterLimits({}, {
+    env: { OPENROUTER_API_KEY: 'sk-zero' },
+    fetch: apiFetch({ 'sk-zero': { usage: 0 } }, { 'sk-zero': { status: 403 } })
+  });
+  assert.equal(provider.status, 'ok');
+  assert.equal(provider.balance.allTimeSpend, 0);
+  assert.equal(provider.balance.amount, null);
+  assert.deepEqual(provider.windows, []);
+});

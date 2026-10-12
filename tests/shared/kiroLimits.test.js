@@ -105,6 +105,29 @@ test('parseKiroUsage falls back to credits ratio when no percent bar', () => {
   assert.equal(parsed.creditsPercent, 25);
 });
 
+test('parseKiroUsage preserves percentage-only reports without inventing credit counts', () => {
+  for (const percent of [37, 0]) {
+    const parsed = parseKiroUsage(`Kiro Pro\nCredits: █████ ${percent}%`);
+    assert.equal(parsed.hasMetrics, true);
+    assert.equal(parsed.creditsPercent, percent);
+    assert.equal(parsed.creditsUsed, null);
+    assert.equal(parsed.creditsTotal, null);
+  }
+});
+
+test('fetchKiroLimits publishes only the metrics present in the CLI report', async () => {
+  for (const [report, expected] of [
+    ['Kiro Pro\nCredits: █████ 37%', [37, null, null]],
+    ['| KIRO FREE |\n(0 of 50 covered in plan)', [0, 0, 50]]
+  ]) {
+    const provider = await fetchKiroLimits({}, { runKiroUsageCli: async () => report });
+    assert.equal(provider.status, 'ok');
+    assert.equal(provider.windows.length, 1);
+    const window = provider.windows[0];
+    assert.deepEqual([window.usedPercent, window.used, window.limit], expected);
+  }
+});
+
 test('parseKiroUsage strips ANSI escape codes', () => {
   const parsed = parseKiroUsage(ANSI_OUTPUT);
   assert.equal(parsed.planName, 'KIRO FREE');

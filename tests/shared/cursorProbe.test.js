@@ -115,6 +115,15 @@ test('parseUsageSummary tolerates missing fields', () => {
   assert.equal(result.membershipType, null);
 });
 
+test('parseUsageSummary keeps missing on-demand usage unknown and preserves zero', () => {
+  for (const used of [null, undefined, '', false, 0]) {
+    const usage = parseUsageSummary({ individualUsage: { onDemand: { used, limit: 10000 } } });
+    assert.equal(usage.onDemandUsedUsd, used === 0 ? 0 : null);
+    assert.equal(usage.onDemandPercent, used === 0 ? 0 : null);
+    assert.equal(usage.onDemandLimitUsd, 100);
+  }
+});
+
 test('parseUserInfo picks email/name/sub', () => {
   const info = parseUserInfo({ email: 'a@b.com', name: 'Alice', sub: 'user_1', extra: 'ignored' });
   assert.deepEqual(info, { email: 'a@b.com', name: 'Alice', sub: 'user_1' });

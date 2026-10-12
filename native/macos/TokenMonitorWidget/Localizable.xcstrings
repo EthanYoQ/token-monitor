@@ -354,6 +354,44 @@
         }
       }
     },
+    "Local models": {
+      "localizations": {
+        "en": {
+          "stringUnit": { "state": "translated", "value": "Local models" }
+        },
+        "zh-Hans": {
+          "stringUnit": { "state": "translated", "value": "本地模型" }
+        },
+        "zh-Hant": {
+          "stringUnit": { "state": "translated", "value": "本機模型" }
+        },
+        "ja": {
+          "stringUnit": { "state": "translated", "value": "ローカルモデル" }
+        },
+        "ko": {
+          "stringUnit": { "state": "translated", "value": "로컬 모델" }
+        }
+      }
+    },
+    "Local cost": {
+      "localizations": {
+        "en": {
+          "stringUnit": { "state": "translated", "value": "Local cost" }
+        },
+        "zh-Hans": {
+          "stringUnit": { "state": "translated", "value": "本地费用" }
+        },
+        "zh-Hant": {
+          "stringUnit": { "state": "translated", "value": "本機費用" }
+        },
+        "ja": {
+          "stringUnit": { "state": "translated", "value": "ローカル費用" }
+        },
+        "ko": {
+          "stringUnit": { "state": "translated", "value": "로컬 비용" }
+        }
+      }
+    },
     "Models": {
       "localizations": {
         "en": {

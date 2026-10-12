@@ -31,6 +31,8 @@ function stripTokenComponents(value) {
 
 function historyForSync(history, periodWindows) {
   if (!history || typeof history !== 'object' || !Array.isArray(history.daily)) return history;
+  const { tokenDays: _tokenDays, coverage: _coverage, ...wireHistory } = history;
+  history = wireHistory;
   const latestDailyKey = history.daily.reduce((latest, row) => {
     const key = String(row?.date || '').slice(0, 10);
     return key > latest ? key : latest;

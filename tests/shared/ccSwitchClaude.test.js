@@ -69,6 +69,36 @@ test('CC-Switch snapshot survives deletion of the original database', (t) => {
   assert.equal(loadCcSwitchClaudeRows({ dbPath, cachePath })[0].input, 25);
 });
 
+test('CC-Switch keeps one usage snapshot while another connection archives requests', (t) => {
+  const { db, dbPath, cachePath } = fixture(t);
+  db.exec('PRAGMA journal_mode=WAL');
+  addLog(db, 'archived', 'claude', '2026-10-13', 123);
+  let archived = false;
+  const prepare = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, 'prepare', function (sql) {
+    const statement = prepare.call(this, sql);
+    if (!sql.includes('FROM usage_daily_rollups')) return statement;
+    const all = statement.all.bind(statement);
+    t.mock.method(statement, 'all', (...args) => {
+      const rows = all(...args);
+      if (!archived) {
+        archived = true;
+        db.exec('SAVEPOINT archive');
+        addRollup(db, '2026-10-13', 'claude', 123);
+        db.exec('DELETE FROM proxy_request_logs; RELEASE archive');
+      }
+      return rows;
+    });
+    return statement;
+  });
+
+  const rows = loadCcSwitchClaudeRows({ dbPath, cachePath });
+  assert.equal(archived, true);
+  assert.equal(rows.reduce((sum, row) => sum + row.input, 0), 123);
+  assert.equal(readCcSwitchClaudeRows(dbPath).reduce((sum, row) => sum + row.input, 0), 123);
+  assert.equal(JSON.parse(fs.readFileSync(cachePath, 'utf8')).rows[0].input, 123);
+});
+
 test('a successful empty CC-Switch read clears the previous snapshot', (t) => {
   const { db, dbPath, cachePath } = fixture(t);
   addRollup(db, '2026-05-04', 'claude', 25);
@@ -93,6 +123,26 @@ test('a cache write failure does not hide a live CC-Switch reading', (t) => {
   addRollup(db, '2026-05-04', 'claude', 25);
   fs.mkdirSync(cachePath);
   assert.equal(loadCcSwitchClaudeRows({ dbPath, cachePath })[0].input, 25);
+});
+
+test('a failed CC-Switch read retains saved rows and marks the collector lane failed', async (t) => {
+  const { db, dbPath, cachePath } = fixture(t);
+  addRollup(db, '2026-10-13', 'claude', 123);
+  loadCcSwitchClaudeRows({ dbPath, cachePath });
+  db.exec('DROP TABLE usage_daily_rollups');
+  const failures = [];
+  assert.equal(loadCcSwitchClaudeRows({ dbPath, cachePath, onReadFailure: (error) => failures.push(error) })[0].input, 123);
+  assert.equal(failures.length, 1);
+  const summary = await collectUsageOnce({
+    homeDir: path.dirname(dbPath), now: new Date(2026, 9, 13, 12), clients: 'claude', allTimeSince: '2026-01-01',
+    platform: 'win32', env: {}, ccSwitchClaudeEnabled: true, ccSwitchDbPath: dbPath, ccSwitchCachePath: cachePath,
+    historyEnabled: false, wslScanEnabled: false, projectsEnabled: false,
+    runTokscale: async () => ({ entries: [] })
+  });
+  assert.equal(summary.allTime.clients.claude, 123);
+  assert.equal(summary.clientHealth.clients.claude.collection.state, 'failed');
+  assert.equal(summary.clientHealth.clients.claude.overall, 'attention');
+  assert.equal(summary.clientHealth.clients.claude.source.state, 'detected');
 });
 
 test('local Claude sessions exclude overlapping CC-Switch days; unattributed totals fail closed', () => {
