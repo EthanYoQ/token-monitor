@@ -19,6 +19,12 @@ WorkBuddy appears in Token Monitor in two independent data planes. Keep them sep
 
 Local App monitoring runs in the Electron main process on macOS and Windows. Linux has no supported local app session, and the Widget reports that capability as unavailable rather than falling back to a token.
 
+## Usage sources
+
+Tokscale reads detailed `projects/**/*.jsonl` under both `~/.workbuddy` and `~/.workbuddy-ai`. It falls back to `workbuddy.db` in those homes when detailed usage is unavailable. Source checks require the database file, and database watches accept only its direct DB, WAL, and SHM files. The separately registered project roots keep their recursive watches.
+
+Custom WorkBuddy scan roots support `workbuddy.db`. The pinned Tokscale scanner does not discover detailed JSONL in custom roots, even though it reads the same JSONL under the built-in homes.
+
 ## Limits and quota
 
 `fetchWorkbuddyLimits()` in `src/shared/providers/workbuddy/limits.js` owns the request and the response mapping. Both billing paths post to `https://copilot.tencent.com` — `/v2/billing/meter/get-user-resource` for personal accounts and `/v2/billing/meter/get-enterprise-user-usage` when an enterprise id is present. The personal request mirrors the official client's package selection (`ProductCode: p_tcaca`, `Status: [0, 3]`) but aggregates only `Status 0` rows, because the `Status 3` history packages are not part of the spendable balance.

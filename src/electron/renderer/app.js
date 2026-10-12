@@ -9491,6 +9491,12 @@ function clientHealthGroup(group, notes, clientId) {
       summaryRow.append(addSource);
     }
     body.append(summaryRow);
+    if (clientId === 'workbuddy') {
+      const hint = document.createElement('div');
+      hint.className = 'tool-health-group-meta';
+      hint.textContent = t('settings.tools.health.workbuddyCustomSourceHint');
+      body.append(hint);
+    }
     const customSourceError = state.customScanPathErrors.get(clientId);
     if (customSourceError) {
       const error = document.createElement('div');

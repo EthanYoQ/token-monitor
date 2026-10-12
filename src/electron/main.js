@@ -2931,6 +2931,19 @@ function presentationHistoryForStats(stats) {
   return null;
 }
 
+function captureAccountUsagePresentation() {
+  const enabled = settings?.codexAccountActivityEnabled === true && String(settings?.clients || '').split(',').includes('codex');
+  const account = enabled ? codexAccountActivity.snapshot() : null;
+  return Object.freeze({
+    account,
+    allTimeSince: settings?.allTimeSince,
+    localDeviceId: settings?.deviceId,
+    singleAccount: account ? !codexAccountActivity.multipleAccounts() : true,
+    nowMs: Date.now(),
+    readState: enabled ? codexAccountActivity.readState() : null
+  });
+}
+
 // Every input besides `stats` belongs in the cache key, or a settings change
 // would keep serving the projection it replaced.
 function electronPresentationStats(stats) {
@@ -2941,22 +2954,18 @@ function electronPresentationStats(stats) {
   };
   const aliases = settings?.modelAliases;
   const grouping = settings?.modelAliasGrouping;
-  const codexSelected = String(settings?.clients || '').split(',').includes('codex');
-  const snapshot = settings?.codexAccountActivityEnabled === true && codexSelected ? codexAccountActivity.snapshot() : null;
-  const singleCodexAccount = snapshot ? !codexAccountActivity.multipleAccounts() : true;
-  const nowMs = Date.now();
+  const accountPresentation = captureAccountUsagePresentation();
+  const { account: snapshot, singleAccount: singleCodexAccount, nowMs, readState } = accountPresentation;
   const selectedDate = snapshot ? localDayKey(new Date(nowMs)) : null;
   const snapshotStale = snapshot ? isAccountActivityStale(snapshot, nowMs) : false;
   const localHistory = snapshot ? presentationHistoryForStats(stats) : null;
-  const readState = settings?.codexAccountActivityEnabled === true && codexSelected ? codexAccountActivity.readState() : null;
   const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null, settings?.allTimeSince,
     settings?.codexAccountActivityEnabled, snapshot?.fetchedAt, snapshot?.lifetimeTokens,
     snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale,
     selectedDate, selectedDate?.slice(0, 7), snapshot, readState, localHistory ? historyRevision(localHistory) : null]);
   return presentationCache.get(stats, key, () => projectModelAliasStats(
     projectLimitStatsForDisplay(snapshot
-      ? presentUsage({ localStats: stats, localHistory, account: snapshot, allTimeSince: settings?.allTimeSince,
-        localDeviceId: settings?.deviceId, singleAccount: singleCodexAccount, nowMs }).stats
+      ? presentUsage({ localStats: stats, localHistory, ...accountPresentation }).stats
       : readState && readState.readStatus !== 'available'
         ? { ...stats, codexAccountActivity: { status: 'unavailable', ...readState } } : stats, limitOptions),
     aliases,
@@ -4121,8 +4130,8 @@ function macWidgetPresentation() {
   });
 }
 
-function macWidgetActiveCodexAccount() {
-  const provider = localLiveCodexProvider(latestStats, settings?.deviceId || '');
+function macWidgetActiveCodexAccount(stats) {
+  const provider = localLiveCodexProvider(stats, settings?.deviceId || '');
   if (!provider) return null;
   return Object.freeze({
     accountKey: String(provider.accountKey || '').trim(),
@@ -4146,8 +4155,7 @@ function ensureMacWidgetDemand() {
     markerPath: path.join(markerDirectory, WIDGET_DEMAND_MARKER),
     provisionalMarkerPath: path.join(markerDirectory, WIDGET_DEMAND_PROVISIONAL_MARKER),
     onActivation: () => {
-      const visibleStats = electronPresentationStats(latestStats);
-      scheduleMacWidgetSnapshot(visibleStats, captureMacWidgetProducerOwner());
+      scheduleMacWidgetSnapshot(latestStats, captureMacWidgetProducerOwner());
     },
     logger: (message) => console.warn(message)
   });
@@ -4176,7 +4184,13 @@ function captureMacWidgetWork({ stats, owner }) {
     historyCachePath: completeHistorySource(resolverConfig) === 'remote'
       ? macWidgetHistoryCachePath(app.getPath('userData'), sourceKey)
       : null,
-    activeCodexAccount: macWidgetActiveCodexAccount(),
+    activeCodexAccount: macWidgetActiveCodexAccount(stats),
+    accountPresentation: captureAccountUsagePresentation(),
+    limitOptions: Object.freeze({
+      localDeviceId: settings?.deviceId,
+      syncActive: syncProvenanceActive(),
+      opencodeLocalLimitsEnabled: settings?.opencodeLocalLimitsEnabled === true
+    }),
     presentation: macWidgetPresentation(),
     modelAliases: Object.freeze(normalizeModelAliases(settings?.modelAliases)),
     modelAliasGrouping: normalizeModelAliasGrouping(settings?.modelAliasGrouping),
@@ -4212,15 +4226,25 @@ function ensureMacWidgetSnapshotController() {
       minIntervalMs: completeHistorySource(work.resolverConfig) === 'remote' ? undefined : 0,
       logger: (message) => console.warn(message)
     }),
-    prepareSnapshot: (work, history) => prepareMacWidgetSnapshotUpdate(work.stats, {
-      snapshotPath: work.snapshotPath,
-      snapshotOptions: {
-        activeCodexAccount: work.activeCodexAccount,
-        presentation: work.presentation,
-        history: projectModelAliasHistory(history, work.modelAliases, { grouping: work.modelAliasGrouping })
-      },
-      logger: (message) => console.warn(message)
-    }),
+    prepareSnapshot: (work, history) => {
+      const { account, readState } = work.accountPresentation;
+      const presented = account
+        ? presentUsage({ localStats: work.stats, localHistory: history, ...work.accountPresentation })
+        : { stats: readState && readState.readStatus !== 'available'
+          ? { ...work.stats, codexAccountActivity: { status: 'unavailable', ...readState } } : work.stats, history };
+      return prepareMacWidgetSnapshotUpdate(projectModelAliasStats(
+        projectLimitStatsForDisplay(presented.stats, work.limitOptions), work.modelAliases, { grouping: work.modelAliasGrouping }
+      ), {
+        snapshotPath: work.snapshotPath,
+        snapshotOptions: {
+          now: work.accountPresentation.nowMs,
+          activeCodexAccount: work.activeCodexAccount,
+          presentation: work.presentation,
+          history: projectModelAliasHistory(presented.history, work.modelAliases, { grouping: work.modelAliasGrouping })
+        },
+        logger: (message) => console.warn(message)
+      });
+    },
     commitSnapshot: (prepared, options) => commitMacWidgetSnapshot(prepared, {
       isCurrent: options.isCurrent,
       logger: (message) => console.warn(message)
@@ -4255,8 +4279,7 @@ function advanceMacWidgetSourceEpoch() {
 
 function refreshMacWidgetHistorySource() {
   advanceMacWidgetSourceEpoch();
-  const visibleStats = electronPresentationStats(latestStats);
-  scheduleMacWidgetSnapshot(visibleStats, captureMacWidgetProducerOwner());
+  scheduleMacWidgetSnapshot(latestStats, captureMacWidgetProducerOwner());
 }
 
 function scheduleMacWidgetSnapshot(stats, producerOwner) {
@@ -4285,7 +4308,7 @@ function sendPush(payload, options = {}) {
       ...payload,
       data: { ...payload.data, stats: rendererSnapshots.stamp(latestStats, rendererStats(visibleStats)) }
     };
-    scheduleMacWidgetSnapshot(visibleStats, options.widgetProducerOwner);
+    scheduleMacWidgetSnapshot(latestStats, options.widgetProducerOwner);
     updateEdgeDockCells(visibleStats);
     syncCodexPresentationActiveAccount();
     updateTrayDisplay();
@@ -5244,7 +5267,7 @@ function syncEdgeDock(rendererSettings) {
 function refreshLimitStatsPresentation() {
   if (!latestStats) return;
   const visibleStats = electronPresentationStats(latestStats);
-  scheduleMacWidgetSnapshot(visibleStats, captureMacWidgetProducerOwner());
+  scheduleMacWidgetSnapshot(latestStats, captureMacWidgetProducerOwner());
   updateEdgeDockCells(visibleStats);
   updateTrayDisplay();
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -7508,8 +7531,8 @@ app.whenReady().then(() => {
   const clientSourceIpcHandlers = createClientSourceIpcHandlers({
     knownClients: KNOWN_CLIENTS,
     trackedClients: () => trackedClientSet(clientsCsvForSetting(settings?.clients)),
-    visibleDiagnosticRoots: (clients) => visibleDiagnosticRoots(clients, { customScanPaths: settings?.customScanPaths }),
-    clientDiagnosticRoots: (clients) => clientDiagnosticRoots(clients, { customScanPaths: settings?.customScanPaths }),
+    visibleDiagnosticRoots: (clients) => visibleDiagnosticRoots(clients, electronUsageConfig('client-sources')),
+    clientDiagnosticRoots: (clients) => clientDiagnosticRoots(clients, electronUsageConfig('client-sources')),
     showItemInFolder: (target) => shell.showItemInFolder(target),
     openPath: (target) => shell.openPath(target),
     revealClientSyncLock: () => {

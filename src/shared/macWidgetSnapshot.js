@@ -396,7 +396,8 @@ function normalizedDaily(history) {
     byDate.set(date, {
       date,
       totalTokens: Math.round(nonNegativeNumber(entry?.tokens)),
-      costUsd: nonNegativeNumber(entry?.cost)
+      costUsd: nonNegativeNumber(entry?.cost),
+      accountProjected: entry?.codexAccountActivity?.headlineSource === 'codex-account'
     });
   }
   return Array.from(byDate.values()).sort((left, right) => left.date.localeCompare(right.date));
@@ -411,7 +412,8 @@ function normalizedMonthly(history) {
     byMonth.set(month, {
       date: month,
       totalTokens: Math.round(nonNegativeNumber(entry?.tokens)),
-      costUsd: nonNegativeNumber(entry?.cost)
+      costUsd: nonNegativeNumber(entry?.cost),
+      accountProjected: entry?.codexAccountActivity?.headlineSource === 'codex-account'
     });
   }
   return Array.from(byMonth.values()).sort((left, right) => left.date.localeCompare(right.date));
@@ -473,11 +475,9 @@ function buildTrend(history, options = {}) {
         }
         points.push({
           ...historical,
-          ...(date === today ? {
-            // The graph may already contain part or all of today's usage. Use
-            // the greater observation instead of adding live and graph values.
-            totalTokens: Math.max(historical.totalTokens, liveTokens),
-            costUsd: Math.max(historical.costUsd, liveCost)
+          ...(date === today && Number.isFinite(livePeriod.totalTokens) && !historical.accountProjected ? {
+            totalTokens: liveTokens,
+            costUsd: liveCost
           } : {})
         });
       }
@@ -496,11 +496,11 @@ function buildTrend(history, options = {}) {
         const historical = byDate.get(date);
         points.push({
           date,
-          totalTokens: date === today
-            ? Math.max(historical?.totalTokens || 0, Math.round(nonNegativeNumber(liveToday.totalTokens)))
+          totalTokens: date === today && Number.isFinite(liveToday.totalTokens) && !historical?.accountProjected
+            ? Math.round(nonNegativeNumber(liveToday.totalTokens))
             : historical?.totalTokens || 0,
-          costUsd: date === today
-            ? Math.max(historical?.costUsd || 0, nonNegativeNumber(liveToday.costUsd))
+          costUsd: date === today && Number.isFinite(liveToday.totalTokens) && !historical?.accountProjected
+            ? nonNegativeNumber(liveToday.costUsd)
             : historical?.costUsd || 0
         });
       }
@@ -513,29 +513,25 @@ function buildTrend(history, options = {}) {
       const existing = byMonth.get(month) || { date: month, totalTokens: 0, costUsd: 0 };
       existing.totalTokens += point.totalTokens;
       existing.costUsd += point.costUsd;
+      existing.accountProjected ||= point.accountProjected;
       byMonth.set(month, existing);
     }
-    // The persisted Widget cache carries complete monthly aggregates and a
-    // bounded daily window. Merge the two so recent months can fill a missing
-    // aggregate without double-counting months already represented by both.
     for (const point of monthly) {
-      const recent = byMonth.get(point.date);
-      byMonth.set(point.date, {
-        date: point.date,
-        totalTokens: Math.max(point.totalTokens, recent?.totalTokens || 0),
-        costUsd: Math.max(point.costUsd, recent?.costUsd || 0)
-      });
+      byMonth.set(point.date, point);
     }
     points = Array.from(byMonth.values())
       .sort((left, right) => left.date.localeCompare(right.date));
     const currentMonth = localDayKey(options.now).slice(0, 7);
     const liveMonth = options.monthPeriod && typeof options.monthPeriod === 'object' ? options.monthPeriod : {};
-    if (currentMonth && (points.length > 0 || nonNegativeNumber(liveMonth.totalTokens) > 0)) {
-      const current = points.find((point) => point.date === currentMonth);
+    const current = byMonth.get(currentMonth);
+    // Account dates use the provider's boundary; local live periods cannot
+    // replace those observations.
+    if (currentMonth && Number.isFinite(liveMonth.totalTokens) && !current?.accountProjected
+      && (points.length > 0 || nonNegativeNumber(liveMonth.totalTokens) > 0 || nonNegativeNumber(liveMonth.costUsd) > 0)) {
       const replacement = {
         date: currentMonth,
-        totalTokens: Math.max(current?.totalTokens || 0, Math.round(nonNegativeNumber(liveMonth.totalTokens))),
-        costUsd: Math.max(current?.costUsd || 0, nonNegativeNumber(liveMonth.costUsd))
+        totalTokens: Math.round(nonNegativeNumber(liveMonth.totalTokens)),
+        costUsd: nonNegativeNumber(liveMonth.costUsd)
       };
       points = [...points.filter((point) => point.date !== currentMonth), replacement]
         .sort((left, right) => left.date.localeCompare(right.date));

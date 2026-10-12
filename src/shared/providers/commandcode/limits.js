@@ -240,13 +240,14 @@ function rollingWindow(kind, raw, windowMinutes) {
   if (!raw || typeof raw !== 'object') return null;
   const limit = numberOrNull(raw.cap ?? raw.limit);
   if (limit === null || limit <= 0) return null;
-  const used = Math.max(0, numberOrNull(raw.used) ?? 0);
+  const reportedUsed = numberOrNull(raw.used);
+  const used = reportedUsed === null ? null : Math.max(0, reportedUsed);
   return {
     kind,
     used,
     limit,
-    remaining: Math.max(0, limit - used),
-    usedPercent: clampPercent((used / limit) * 100),
+    remaining: used === null ? null : Math.max(0, limit - used),
+    usedPercent: used === null ? null : clampPercent((used / limit) * 100),
     resetsAt: toIso(raw.resetAt ?? raw.reset_at),
     windowMinutes,
     showMeter: true

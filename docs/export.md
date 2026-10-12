@@ -20,6 +20,8 @@ In **Settings → Collection → Data export**:
 
 Both actions write the **same** files.
 
+Exports contain usage recorded by the local collectors, combined across connected devices in Hub mode. They exclude the official Codex account projection used for app headlines and charts. Model details and costs remain based on those collected records, so exported totals can differ from account-based totals in the app. This source distinction does not change the CSV columns or JSON format.
+
 ## The files
 
 | File | What it is |

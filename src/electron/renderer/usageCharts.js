@@ -394,14 +394,14 @@
     return path;
   }
 
-  function selectPreviewSeries(preview, period) {
+  function selectPreviewSeries(preview, period, todayDate = localDayKey()) {
     const p = preview && typeof preview === 'object' ? preview : {};
     const daily = Array.isArray(p.daily) ? p.daily : [];
     const monthly = Array.isArray(p.monthly) ? p.monthly : [];
     if (period === 'allTime') return { points: monthly, metric: 'tokens', labelKey: 'month' };
     if (period === 'month') {
-      const latest = daily.length ? String(daily[daily.length - 1].date).slice(0, 7) : '';
-      return { points: daily.filter((d) => String(d.date).slice(0, 7) === latest), metric: 'tokens', labelKey: 'date' };
+      const month = String(todayDate || localDayKey()).slice(0, 7);
+      return { points: daily.filter((d) => String(d.date).slice(0, 7) === month), metric: 'tokens', labelKey: 'date' };
     }
     return { points: daily.slice(-7), metric: 'tokens', labelKey: 'date' }; // 'today' -> last 7 days
   }
