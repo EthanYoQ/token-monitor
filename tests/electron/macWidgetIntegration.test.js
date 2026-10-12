@@ -93,20 +93,20 @@ function createWidgetArtifactRoot() {
   return artifactRoot;
 }
 
-test('publishes projected stats to the macOS Widget on collection and presentation changes', () => {
+test('schedules raw stats for captured macOS Widget presentation on collection and settings changes', () => {
   const start = mainSource.indexOf('function sendPush(payload, options = {})');
   const end = mainSource.indexOf('\nfunction statsHistoryRevision', start);
   assert.ok(start >= 0 && end > start, 'sendPush function should exist');
   const sendPush = mainSource.slice(start, end);
   assert.match(sendPush, /latestStats = payload\.data\.stats;[\s\S]*?const visibleStats = electronPresentationStats\(latestStats\);/);
-  assert.match(sendPush, /scheduleMacWidgetSnapshot\(visibleStats, options\.widgetProducerOwner\);/);
-  assert.equal((mainSource.match(/scheduleMacWidgetSnapshot\(visibleStats, options\.widgetProducerOwner\)/g) || []).length, 1);
+  assert.match(sendPush, /scheduleMacWidgetSnapshot\(latestStats, options\.widgetProducerOwner\);/);
+  assert.equal((mainSource.match(/scheduleMacWidgetSnapshot\(latestStats, options\.widgetProducerOwner\)/g) || []).length, 1);
   const refreshStart = mainSource.indexOf('function refreshLimitStatsPresentation()');
   const refreshEnd = mainSource.indexOf('\nfunction sendMimoAccountsPush', refreshStart);
   assert.ok(refreshStart >= 0 && refreshEnd > refreshStart, 'presentation refresh function should exist');
   assert.match(
     mainSource.slice(refreshStart, refreshEnd),
-    /scheduleMacWidgetSnapshot\(visibleStats, captureMacWidgetProducerOwner\(\)\);/
+    /scheduleMacWidgetSnapshot\(latestStats, captureMacWidgetProducerOwner\(\)\);/
   );
   assert.match(mainSource, /compactTokenUnits: settings\?\.compactTokenUnits/);
 });
@@ -233,7 +233,7 @@ test('main wiring arms Widget demand from the app-group marker and gates snapsho
   execution.captured[0].onActivation();
   assert.equal(execution.calls.scheduled.length, 1);
   assert.deepEqual(execution.calls.scheduled[0].producerOwner, { epoch: 7 });
-  assert.equal(execution.calls.scheduled[0].stats.projected, true);
+  assert.equal(execution.calls.scheduled[0].stats, execution.context.latestStats);
 });
 
 test('Widget demand gate, startup arm and quit stop are wired into the snapshot path', () => {
@@ -241,7 +241,7 @@ test('Widget demand gate, startup arm and quit stop are wired into the snapshot 
   const captureEnd = mainSource.indexOf('\nfunction ensureMacWidgetSnapshotController', captureStart);
   const captureSource = mainSource.slice(captureStart, captureEnd);
   assert.match(captureSource, /if \(macWidgetDemand && !macWidgetDemand\.isInstalled\(\)\) return null;/);
-  assert.match(captureSource, /activeCodexAccount: macWidgetActiveCodexAccount\(\),/);
+  assert.match(captureSource, /activeCodexAccount: macWidgetActiveCodexAccount\(stats\),/);
   assert.match(mainSource, /activeCodexAccount: work\.activeCodexAccount,/);
 
   const demandStart = mainSource.indexOf('function ensureMacWidgetDemand()');
@@ -258,7 +258,7 @@ test('Widget demand gate, startup arm and quit stop are wired into the snapshot 
   );
   assert.match(
     demandSource,
-    /onActivation: \(\) => \{\s*const visibleStats = electronPresentationStats\(latestStats\);\s*scheduleMacWidgetSnapshot\(visibleStats, captureMacWidgetProducerOwner\(\)\);/
+    /onActivation: \(\) => \{\s*scheduleMacWidgetSnapshot\(latestStats, captureMacWidgetProducerOwner\(\)\);/
   );
   assert.match(demandSource, /macWidgetDemand\.start\(\);/);
 
@@ -458,7 +458,7 @@ test('LaunchServices recovery delegates current-host registration to the public 
   assert.match(widgetReloaderSource, /contentsURL\.lastPathComponent == "Contents"/);
 });
 
-test('a history setting refresh projects local OpenCode quota before scheduling the Widget', () => {
+test('a history setting refresh schedules raw quota with the current Widget owner', () => {
   const rawStats = {
     limits: {
       providers: [{
@@ -494,8 +494,7 @@ test('a history setting refresh projects local OpenCode quota before scheduling 
   vm.runInContext('refreshMacWidgetHistorySource()', context);
 
   assert.equal(scheduled.producerOwner, owner);
-  assert.equal(scheduled.stats.limits.providers[0].status, 'disabled');
-  assert.deepEqual(scheduled.stats.limits.providers[0].windows, []);
+  assert.equal(scheduled.stats, rawStats);
 });
 
 test('keeps Widget packaging opt-in and injects artifacts only after a successful build', () => {

@@ -45,6 +45,15 @@ test('WSL SQLite recovery guidance is localized without English fallback', () =>
   }
 });
 
+test('WorkBuddy custom directory guidance describes DB scanning in every locale', () => {
+  for (const locale of LANGUAGE_OPTIONS.map((option) => option.value).filter((value) => value !== 'auto')) {
+    const hint = MESSAGES[locale]['settings.tools.health.workbuddyCustomSourceHint'];
+    assert.equal(typeof hint, 'string', locale);
+    assert.match(hint, /workbuddy\.db/, locale);
+    assert.match(hint, /JSONL/, locale);
+  }
+});
+
 test('Unlimited remains a provider quota value token in every locale', () => {
   for (const locale of LANGUAGE_OPTIONS.map((option) => option.value).filter((value) => value !== 'auto')) {
     assert.equal(MESSAGES[locale]['settings.thirdparty.unlimited'], 'Unlimited', locale);

@@ -15,12 +15,15 @@ const aliases = { 'anthropic/claude-opus-5': 'claude-opus-5' };
 function mainFunction(name, dependencies) {
   const body = source.match(new RegExp(`(?:async )?function ${name}\\([^]*?\\n\\}`))?.[0];
   assert.ok(body);
-  return vm.runInNewContext(`(${body})`, {
+  const capture = source.match(/function captureAccountUsagePresentation\([^]*?\n\}/)?.[0];
+  return vm.runInNewContext(`${capture || ''}\n(${body})`, {
     ...presentation,
     presentUsage: require('../../src/shared/providers/codex/accountActivity').presentUsage,
     latestStats: null,
     hubModeGeneration: 0,
     remotePresentationHistory: null,
+    syncProvenanceActive: () => false,
+    projectLimitStatsForDisplay: require('../../src/electron/limits/statsPresentation').projectLimitStatsForDisplay,
     ...dependencies
   });
 }

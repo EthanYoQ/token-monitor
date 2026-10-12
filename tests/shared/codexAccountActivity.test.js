@@ -371,7 +371,8 @@ test('Home selects local date names without shifting official buckets and invali
     const body = source.match(/function electronPresentationStats\([^]*?\n\}/)[0];
     let nowMs = Date.parse('2026-09-30T15:59:30Z');
     class ClockDate extends Date { static now() { return nowMs; } }
-    const project = vm.runInNewContext(`(${body})`, {
+    const capture = source.match(/function captureAccountUsagePresentation\([^]*?\n\}/)?.[0];
+    const project = vm.runInNewContext(`${capture || ''}\n(${body})`, {
       settings: { clients: 'codex,claude', codexAccountActivityEnabled: true, allTimeSince: '2024-01-01' },
       codexAccountActivity: { snapshot: () => snapshot, multipleAccounts: () => false, readState: () => null },
       syncProvenanceActive: () => false,
