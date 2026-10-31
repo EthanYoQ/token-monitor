@@ -48,6 +48,34 @@ test('selectFundedRow falls back to USD then first when nothing is funded', () =
   assert.equal(sel.amount, 0);
 });
 
+test('selectFundedRow rejects missing and malformed balances while preserving observed zero', () => {
+  for (const field of ['total_balance', 'topped_up_balance']) {
+    for (const value of [null, undefined, '', ' ', false, [], {}]) {
+      assert.throws(() => selectFundedRow([
+        { currency: 'USD', total_balance: 0, topped_up_balance: 0, [field]: value }
+      ]), /no usable balance rows/);
+    }
+  }
+  for (const value of [0, '0.00']) {
+    assert.deepEqual(selectFundedRow([
+      { currency: 'USD', total_balance: value, topped_up_balance: value }
+    ]), { currency: 'USD', amount: 0, paid: 0 });
+  }
+});
+
+test('fetchDeepSeekLimits rejects a null balance without recording consumption', async () => {
+  let writes = 0;
+  const provider = await fetchDeepSeekLimits({}, {
+    env: { DEEPSEEK_API_KEY: 'sk-test' },
+    fetch: async () => balanceResponse([{ currency: 'USD', total_balance: null, topped_up_balance: null }]),
+    readJson: () => ({}),
+    writeJsonAtomic: () => { writes += 1; }
+  });
+  assert.equal(provider.status, 'unavailable');
+  assert.deepEqual(provider.windows, []);
+  assert.equal(writes, 0);
+});
+
 test('fetchDeepSeekLimits returns notConfigured when no key', async () => {
   const r = await fetchDeepSeekLimits({}, { env: {} });
   assert.equal(r.provider, 'deepseek');

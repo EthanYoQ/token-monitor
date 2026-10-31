@@ -318,14 +318,45 @@ function spawnTokscaleJson(userArgs, commandTimeoutMs, command = tokscaleCommand
   });
 }
 
-function readCodexAccountActivity(options = {}) {
-  return spawnTokscaleJson(
-    ['codex', 'activity', '--json'],
-    options.commandTimeoutMs || 15_000,
-    tokscaleCommand(),
-    options.signal,
-    { operation: 'Codex account activity' }
-  );
+async function readCodexAccountActivity(options = {}) {
+  const command = options.command || tokscaleCommand();
+  const env = options.env || command.env || process.env;
+  const platform = options.platform || process.platform;
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
+  const { codexCommandCandidates } = require('./providers/codex/limits');
+  const exists = options.existsSync || fs.existsSync;
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') || 'PATH';
+  const nativeDirs = codexCommandCandidates(env, platform, options)
+    .filter((candidate) => pathApi.isAbsolute(candidate)
+      && pathApi.basename(candidate) === (platform === 'win32' ? 'codex.exe' : 'codex')
+      && exists(candidate))
+    .map((candidate) => pathApi.dirname(candidate));
+  const environments = [...new Set(nativeDirs)].map((directory) => ({
+    ...env, [pathKey]: [directory, env[pathKey]].filter(Boolean).join(pathApi.delimiter)
+  }));
+  environments.push(env);
+  const now = options.now || Date.now;
+  const deadline = now() + (options.commandTimeoutMs || 15_000);
+  const run = options.runCommand || spawnTokscaleJson;
+  let lastResult;
+  let lastError;
+  for (const childEnv of environments) {
+    throwIfAborted(options.signal);
+    const remaining = deadline - now();
+    if (remaining <= 0) throw new Error('Codex account activity timed out');
+    try {
+      lastResult = await run(['codex', 'activity', '--json'], Math.min(5000, remaining),
+        { ...command, env: childEnv }, options.signal, { operation: 'Codex account activity' });
+      throwIfAborted(options.signal);
+      if (lastResult?.codexAccountActivity?.status === 'available') return lastResult;
+    } catch (error) {
+      throwIfAborted(options.signal);
+      if (error.code === 'termination-unconfirmed') throw error;
+      lastError = error;
+    }
+  }
+  if (lastResult) return lastResult;
+  throw lastError || new Error('Codex account activity unavailable');
 }
 
 const TOKSCALE_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;
@@ -1202,6 +1233,7 @@ async function collectUsageOnce(options) {
   let promaPeriods = null;
   let promaRows = null;
   let promaPricing = null;
+  let promaReadFailed = false;
   let qoderCnPeriods = null;
   let qoderCnRows = null;
   let qoderCnPricing = null;
@@ -1211,15 +1243,22 @@ async function collectUsageOnce(options) {
   let openCodeReviewReadFailed = false;
   let ocrHistoryRevision = anchor?.openCodeReviewHistoryRevision;
   let ccSwitchTodayRows = [];
+  let ccSwitchReadFailed = false;
   let ccSwitchClaudeRefreshed = false;
   let ccSwitchTodayAdmitted = anchorUsed && anchor.ccSwitchTodayAdmitted === true;
   const ccSwitchRows = includesCcSwitchClaude
-    ? loadCcSwitchClaudeRows({ dbPath: options.ccSwitchDbPath, cachePath: options.ccSwitchCachePath, logger: options.logger })
+    ? loadCcSwitchClaudeRows({
+      dbPath: options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db'),
+      cachePath: options.ccSwitchCachePath, logger: options.logger,
+      onReadFailure: () => { ccSwitchReadFailed = true; }
+    })
     : [];
   let admittedCcRows = [];
   const emitProgress = (periods) => {
     if (typeof options.onProgress !== 'function') return;
     const progress = { ...periods };
+    if (promaPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, promaPeriods.today);
+    if (promaPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, promaPeriods.month);
     if (qoderCnPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, qoderCnPeriods.today);
     if (qoderCnPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, qoderCnPeriods.month);
     if (openCodeReviewPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, openCodeReviewPeriods.today);
@@ -1277,9 +1316,17 @@ async function collectUsageOnce(options) {
       onFailure: options.onSelfSyncFailed
     });
     throwIfAborted(options.signal);
-    if (includesProma && (!targetRequested || targetClients.includes('proma'))) {
+    if (includesProma && (!targetRequested || targetClients.includes('proma') || options.includeHistory)) {
       try {
-        promaRows = collectPromaRows();
+        promaRows = collectPromaRows({ homeDir: options.homeDir });
+        if (options.promaState) options.promaState.rows = promaRows;
+      } catch (err) {
+        promaReadFailed = true;
+        promaRows = options.promaState?.rows || null;
+        if (anchorUsed && !anchor.todayPartitions?.proma && !promaRows) anchorUsed = false;
+        try { options.logger?.(`proma parse failed: ${err.code || 'PROMA_READ_FAILED'}`); } catch (_) {}
+      }
+      if (promaRows) {
         promaPricing = await resolvePromaPricing(promaRows, {
           lookupModelPricing: options.lookupModelPricing,
           commandTimeoutMs: options.pricingTimeoutMs ?? Math.min(commandTimeoutMs || PROMA_PRICING_LOOKUP_TIMEOUT_MS, PROMA_PRICING_LOOKUP_TIMEOUT_MS),
@@ -1291,8 +1338,6 @@ async function collectUsageOnce(options) {
           month: extractUsageFromTokscale(promaJson.month),
           allTime: extractUsageFromTokscale(promaJson.allTime)
         };
-      } catch (err) {
-        if (typeof options.logger === 'function') options.logger(`proma parse failed: ${err.message}`);
       }
     }
     if (includesQoderCn && (!targetRequested || targetClients.includes('qodercn'))) {
@@ -1389,6 +1434,9 @@ async function collectUsageOnce(options) {
       }
       if (openCodeReviewReadFailed && anchor.todayPartitions?.['open-code-review']) {
         freshPartitions['open-code-review'] = anchor.todayPartitions['open-code-review'];
+      }
+      if (promaReadFailed && anchor.todayPartitions?.proma) {
+        freshPartitions.proma = anchor.todayPartitions.proma;
       }
       if (!useTargetedPartitions) {
         // The fallback rebuilds every Tokscale partition, but parse-local
@@ -1497,6 +1545,10 @@ async function collectUsageOnce(options) {
   //    and watch ticks fire every few seconds.
   // 3. !anchorUsed (full scan): scan WSL as part of the complete rescan.
   const windowsPeriods = { today, month, allTime };
+  const unavailableClients = [
+    ...(openCodeReviewReadFailed ? ['open-code-review'] : []),
+    ...(promaReadFailed ? ['proma'] : [])
+  ];
   let wslBundle = emptyWslBundle();
   let wslDetected = [];
   if (normalizedClients && options.wslScanEnabled !== false) {
@@ -1561,7 +1613,7 @@ async function collectUsageOnce(options) {
         ...(options.dailyHistoryArchiveOptions || {}),
         liveDays: dailyHistoryLiveDays,
         todayKey: localTodayKey(collectedAt),
-        unavailableClients: openCodeReviewReadFailed ? ['open-code-review'] : [],
+        unavailableClients,
         writeEnabled: options.dailyHistoryArchiveWriteEnabled
       });
       dailyHistoryLiveDays = retainedLive.liveDays || {};
@@ -1606,6 +1658,8 @@ async function collectUsageOnce(options) {
     env: options.env,
     homeDir: options.homeDir,
     platform: platformValue,
+    ccSwitchClaudeEnabled: includesCcSwitchClaude,
+    ccSwitchDbPath: options.ccSwitchDbPath,
     wslDetected: wslStatus?.detected
   });
 
@@ -1653,6 +1707,8 @@ async function collectUsageOnce(options) {
       todayPartitions,
       qoderCnPeriods,
       openCodeReviewReadFailed,
+      promaReadFailed,
+      unavailableClients,
       fullScan: !anchorUsed,
       openCodeReviewHistoryRevision: ocrHistoryRevision,
       ccSwitchAdmittedRows: admittedCcRows,
@@ -1706,7 +1762,7 @@ async function collectUsageOnce(options) {
     throwIfAborted(options.signal);
     const history = await collectHistoryOnce({
       clients: tokscaleClients,
-      promaGraph: includesProma ? buildPromaHistoryGraph({ rows: promaRows || collectPromaRows(), pricingByModel: promaPricing || {} }) : null,
+      promaGraph: promaRows ? buildPromaHistoryGraph({ rows: promaRows, pricingByModel: promaPricing || {} }) : null,
       ccSwitchClaudeGraph: includesCcSwitchClaude ? ccSwitchClaudeGraph(admittedCcRows.filter((row) => row.date >= allTimeSince)) : null,
       qoderCnGraph: historyQoderCnGraph || null,
       openCodeReviewGraph: openCodeReviewRows ? buildOpenCodeReviewHistoryGraph({ rows: openCodeReviewRows }) : null,
@@ -1718,10 +1774,10 @@ async function collectUsageOnce(options) {
       signal: options.signal,
       dailyHistoryArchiveEnabled: options.dailyHistoryArchiveEnabled,
       dailyHistoryArchiveWriteEnabled: options.dailyHistoryArchiveWriteEnabled,
-      unavailableClients: openCodeReviewReadFailed ? ['open-code-review'] : [],
+      unavailableClients,
       dailyHistoryArchiveOptions: options.dailyHistoryArchiveOptions,
       dailyHistoryLiveDays,
-      onHistoryStatus: openCodeReviewReadFailed ? null : options.onHistoryStatus,
+      onHistoryStatus: unavailableClients.length > 0 ? null : options.onHistoryStatus,
       logger: options.logger
     });
     throwIfAborted(options.signal);
@@ -1730,10 +1786,10 @@ async function collectUsageOnce(options) {
       options.onQoderCnHistoryGraph(qoderCnGraph);
     }
   }
-  if (options.historyEnabled !== false && options.includeHistory && openCodeReviewReadFailed) {
+  if (options.historyEnabled !== false && options.includeHistory && unavailableClients.length > 0) {
     try {
       options.onHistoryStatus?.({ attemptedAt: collectedAt.toISOString(), successAt: null,
-        failureCode: 'open-code-review-history-unavailable', durationMs: 0 });
+        failureCode: `${unavailableClients[0]}-history-unavailable`, durationMs: 0 });
     } catch (_) {}
   }
   // After history, so `lastActivityDay` can come from the daily buckets this
@@ -1749,8 +1805,9 @@ async function collectUsageOnce(options) {
       localTodayKey(collectedAt)
     )
   });
-  if (openCodeReviewReadFailed && clientHealth?.clients['open-code-review']) {
-    const entry = clientHealth.clients['open-code-review'];
+  for (const client of [...unavailableClients, ...(ccSwitchReadFailed ? ['claude'] : [])]) {
+    const entry = clientHealth?.clients[client];
+    if (!entry) continue;
     entry.collection = { state: 'failed', lastAttemptAt: collectedAt.toISOString() };
     entry.overall = deriveClientOverall(entry);
     if (entry.diagnostics) entry.diagnostics = entry.diagnostics.filter(({ code }) => code !== 'no-usage-observed');
@@ -1783,12 +1840,6 @@ function clientWatchCandidates(clientsCsv, options = {}) {
         && !INTERVAL_ONLY_SOURCE_CHECK_IDS.has(root.id)
       ))
       .map((root) => root.dir);
-  }
-  if (options.ccSwitchClaudeEnabled === true
-    && (options.platform || process.platform) === 'win32'
-    && normalizeClientsCsv(clientsCsv).split(',').includes('claude')) {
-    const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
-    byClient.claude = [...new Set([...(byClient.claude || []), path.dirname(dbPath)])];
   }
   return byClient;
 }
@@ -1872,11 +1923,24 @@ function watchPathsForClients(clientsCsv, options = {}) {
 function watchAttributionRootsForClients(clientsCsv, watchRoots = null, options = {}) {
   const rootsByClient = watchRoots || watchClientRootsForClients(clientsCsv, options);
   let attributedRoots = rootsByClient;
+  if (rootsByClient.workbuddy) {
+    const sources = clientSourceRoots('workbuddy', options).workbuddy;
+    const databases = sources.filter((root) => root.id === 'workbuddy-db');
+    const databaseParents = new Set(databases.map((root) => path.resolve(root.dir)));
+    const recursiveParents = new Set(sources.filter((root) => !root.sourcePath).map((root) => path.resolve(root.dir)));
+    attributedRoots = {
+      ...attributedRoots,
+      workbuddy: [
+        ...rootsByClient.workbuddy.filter((root) => !databaseParents.has(path.resolve(root)) || recursiveParents.has(path.resolve(root))),
+        ...databases.flatMap(({ sourcePath }) => [sourcePath, `${sourcePath}-wal`, `${sourcePath}-shm`])
+      ]
+    };
+  }
   if (options.ccSwitchClaudeEnabled === true && rootsByClient.claude) {
     const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
     const parent = path.resolve(path.dirname(dbPath));
     attributedRoots = {
-      ...rootsByClient,
+      ...attributedRoots,
       claude: [...rootsByClient.claude.filter((root) => path.resolve(root) !== parent), dbPath, `${dbPath}-wal`]
     };
   }
@@ -2062,6 +2126,9 @@ function watchPolicyEntries(clientsCsv, options = {}) {
   };
   const withBasename = (client, basename) =>
     (candidates[client] || []).filter((dir) => path.basename(dir) === basename);
+
+  bound('workbuddy', [...withBasename('workbuddy', '.workbuddy'), ...withBasename('workbuddy', '.workbuddy-ai')],
+    directChildOnly((child) => /^workbuddy\.db(?:-(?:wal|shm))?$/.test(child)));
 
   if (options.ccSwitchClaudeEnabled === true) {
     const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
@@ -2690,6 +2757,7 @@ function startCollector(options) {
   let liveDailyHistoryDays = {};
   let qoderCnHistoryGraph = null;
   const openCodeReviewState = { rows: null };
+  const promaState = { rows: null };
   let lastFullScanAt = 0;
   let pendingWaiters = [];
   let debounceTimer = null;
@@ -2928,6 +2996,7 @@ function startCollector(options) {
         qoderCnHistoryFallbackGraph: qoderCnHistoryGraph,
         qoderCnReadState,
         openCodeReviewState,
+        promaState,
         onAnchorComputed: (x) => { captured = x; },
         onQoderCnHistoryGraph: (graph) => { qoderCnHistoryGraph = graph; },
         onProgress: (partial) => {
@@ -3011,7 +3080,7 @@ function startCollector(options) {
         wslAnchor = captured.wslBundle;
         wslStatusAnchor = captured.wslStatus || null;
         if (!qoderCnReadState.periodFailed) lastFullScanAt = Date.now();
-        if (options.anchorPersistenceEnabled !== false && !captured.openCodeReviewReadFailed) {
+        if (options.anchorPersistenceEnabled !== false && !captured.openCodeReviewReadFailed && !captured.promaReadFailed) {
           try {
             fs.mkdirSync(path.dirname(anchorPath), { recursive: true });
             fs.writeFileSync(anchorPath, JSON.stringify({
@@ -3068,7 +3137,7 @@ function startCollector(options) {
             ...(options.dailyHistoryArchiveOptions || {}),
             liveDays: liveDailyHistoryDays,
             todayKey: visibleDateKey,
-            unavailableClients: captured?.openCodeReviewReadFailed ? ['open-code-review'] : [],
+            unavailableClients: captured?.unavailableClients || [],
             // Watch ticks update the in-memory maximum on every refresh, but
             // only full/history ticks write it. This avoids a disk write for
             // every few-second watch event without dropping the value before
@@ -3450,6 +3519,7 @@ function startCollector(options) {
     stopped = true;
     runtimeAbortController.abort(new Error('collector stopped'));
     openCodeReviewState.rows = null;
+    promaState.rows = null;
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     if (intervalTimer) { clearTimeout(intervalTimer); intervalTimer = null; }
     clearRolloverHistoryRetry();

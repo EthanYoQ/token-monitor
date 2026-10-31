@@ -175,7 +175,7 @@ test('Tool and Model breakdowns consume the shared token-or-cost rows', () => {
   const app = fs.readFileSync(path.join(rendererDir, 'app.js'), 'utf8');
   assert.ok(index.indexOf('usageAttributionRows.js') < index.indexOf('app.js'));
   assert.match(app, /periodAttributionRows\(period, period\?\.clients, period\?\.clientCosts\)/);
-  assert.match(app, /periodAttributionRows\(period, period\?\.models, period\?\.modelCosts\)/);
+  assert.match(app, /periodAttributionRows\(\{ \.\.\.period, totalTokens: modelTotal \}, period\?\.models, period\?\.modelCosts\)/);
   assert.match(app, /visibleAttributionRows\(rows, formatCost\)/);
   assert.match(app, /attributionValue\(/);
 });
@@ -203,5 +203,5 @@ test('Model rows use the selected ranking metric for order and bar scale', () =>
   assert.match(app, /unattributed/);
   assert.match(app, /const width = rowWidth\(barValue, max\)/);
   assert.match(app, /const max = barScaleMax\(rows\)/);
-  assert.match(app, /homeModelRows\(modelRowsForPeriod\(period, 'tokens'\), period\?\.totalTokens, 5\)/);
+  assert.match(app, /homeModelRows\(modelRowsForPeriod\(period, 'tokens'\), 5\)/);
 });

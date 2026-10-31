@@ -24,7 +24,7 @@ struct SmallUsageWidgetView: View {
                     .offset(x: -1.5)
 
                 if snapshot.presentation.showCost {
-                    Text(WidgetFormat.cost(snapshot.overview.costUsd, presentation: snapshot.presentation))
+                    Text(WidgetL10n.text("Local cost") + " " + WidgetFormat.cost(snapshot.overview.costUsd, presentation: snapshot.presentation))
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(WidgetDesignTokens.muted)
                 }
@@ -77,7 +77,12 @@ struct MediumUsageWidgetView: View {
         case .tools:
             MediumBreakdownModule(rows: toolRows, presentation: snapshot.presentation)
         case .models:
-            MediumBreakdownModule(rows: modelRows, presentation: snapshot.presentation)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(WidgetL10n.text("Local models"))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(WidgetDesignTokens.muted)
+                MediumBreakdownModule(rows: modelRows, presentation: snapshot.presentation)
+            }
         }
     }
 
@@ -191,7 +196,7 @@ struct LargeDashboardWidgetView: View {
     }
 
     private var usesTools: Bool { page == .tools }
-    private var breakdownTitle: String { usesTools ? WidgetL10n.text("Tools") : WidgetL10n.text("Models") }
+    private var breakdownTitle: String { usesTools ? WidgetL10n.text("Tools") : WidgetL10n.text("Local models") }
 
     private var breakdownRows: [WidgetBreakdownRow] {
         if usesTools {
@@ -227,7 +232,7 @@ struct WidgetMetricBlock: View {
                 .minimumScaleFactor(0.7)
                 .contentTransition(.numericText())
             if snapshot.presentation.showCost {
-                Text(WidgetFormat.cost(snapshot.overview.costUsd, presentation: snapshot.presentation))
+                Text(WidgetL10n.text("Local cost") + " " + WidgetFormat.cost(snapshot.overview.costUsd, presentation: snapshot.presentation))
                     .font(.caption.weight(.medium))
                     .monospacedDigit()
                     .foregroundStyle(WidgetDesignTokens.muted)

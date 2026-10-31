@@ -55,9 +55,9 @@ function cursorBillingWindow(label, fields = {}) {
 }
 
 function cursorOnDemandWindow(usage, resetsAt) {
-  const personalUsed = finiteNumber(usage.onDemandUsedUsd) ?? 0;
+  const personalUsed = finiteNumber(usage.onDemandUsedUsd);
   const personalLimit = finiteNumber(usage.onDemandLimitUsd);
-  const teamUsed = finiteNumber(usage.teamOnDemandUsedUsd) ?? 0;
+  const teamUsed = finiteNumber(usage.teamOnDemandUsedUsd);
   const teamLimit = finiteNumber(usage.teamOnDemandLimitUsd);
   let used;
   let limit = null;
@@ -79,7 +79,7 @@ function cursorOnDemandWindow(usage, resetsAt) {
     return null;
   }
 
-  if (limit !== null && remaining === null) remaining = Math.max(0, limit - used);
+  if (limit !== null && used !== null && remaining === null) remaining = Math.max(0, limit - used);
   return cursorBillingWindow('On-demand spend', {
     metric: 'spend',
     currency: 'USD',
@@ -177,8 +177,8 @@ async function fetchCursorAccountLimits(account, deps = {}) {
 
   if (usage.hasTeamPooledUsage || finiteNumber(usage.teamPooledLimitUsd) !== null || (finiteNumber(usage.teamPooledUsedUsd) !== null && usage.teamPooledUsedUsd > 0)) {
     const remaining = finiteNumber(usage.teamPooledRemainingUsd)
-      ?? (finiteNumber(usage.teamPooledLimitUsd) !== null
-        ? Math.max(0, usage.teamPooledLimitUsd - (finiteNumber(usage.teamPooledUsedUsd) || 0))
+      ?? (finiteNumber(usage.teamPooledLimitUsd) !== null && finiteNumber(usage.teamPooledUsedUsd) !== null
+        ? Math.max(0, usage.teamPooledLimitUsd - usage.teamPooledUsedUsd)
         : null);
     windows.push(cursorBillingWindow('Team pool', {
       usedPercent: finiteNumber(usage.teamPooledPercent) ?? percentFromUsedLimit(usage.teamPooledUsedUsd, usage.teamPooledLimitUsd),

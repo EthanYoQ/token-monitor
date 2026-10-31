@@ -145,14 +145,11 @@
       .map(({ index: _index, ...account }) => account);
   }
 
-  function homeModelRows(rows, totalTokens, limit = 5) {
+  function homeModelRows(rows, limit = 5) {
     const visible = (rows || [])
       .filter((row) => Math.max(0, Number(row?.value || 0)) > 0)
       .slice(0, Math.max(0, Number(limit) || 0));
-    const suppliedTotal = finiteNumber(totalTokens);
-    const total = suppliedTotal != null && suppliedTotal > 0
-      ? suppliedTotal
-      : visible.reduce((sum, row) => sum + Math.max(0, Number(row?.value || 0)), 0);
+    const total = (rows || []).reduce((sum, row) => sum + Math.max(0, Number(row?.value || 0)), 0);
     return visible.map((row) => ({
       key: row.key || row.name || '',
       name: row.name || '',
@@ -315,16 +312,9 @@
     return rows;
   }
 
-  // The standalone Trends page keeps active time and peak aligned with the selected
-  // period. Home uses longRangePeakDayTokens instead, matching its long-range chart;
-  // active days remain local; a verified Codex account streak can extend the
-  // retained-history streak when local sessions omit active account days.
-  function activityStatsForPeriod({ period, fixedSnapshot, daily, historySummary, todayKey, codexAccountActivity } = {}) {
+  function activityStatsForPeriod({ period, fixedSnapshot, daily, historySummary, todayKey } = {}) {
     const history = historySummary && typeof historySummary === 'object' ? historySummary : {};
-    const localStreak = finiteNumber(history.currentStreak) || 0;
-    const currentStreak = codexAccountActivity?.status === 'applied'
-      && Number.isSafeInteger(codexAccountActivity.currentStreak)
-      ? Math.max(localStreak, codexAccountActivity.currentStreak) : localStreak;
+    const currentStreak = finiteNumber(history.currentStreak) || 0;
     if (fixedSnapshot?.status === 'ready') {
       return {
         activeDays: finiteNumber(history.activeDays) || 0,

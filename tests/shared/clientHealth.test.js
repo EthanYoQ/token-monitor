@@ -309,7 +309,8 @@ test('countOverall tallies by headline state', () => {
 // but this test stops a new client's root from being silently dropped on ingest.
 test('every source-root id the collector emits is in the allowlist', () => {
   const roots = clientSourceRoots(KNOWN_CLIENTS, {
-    customScanPaths: { codex: [path.resolve('tmp', 'codex-extra')] }
+    customScanPaths: { codex: [path.resolve('tmp', 'codex-extra')] },
+    platform: 'win32', ccSwitchClaudeEnabled: true
   });
   const emitted = new Set();
   for (const entries of Object.values(roots)) {

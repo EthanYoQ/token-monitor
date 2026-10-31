@@ -72,32 +72,36 @@ function collectSessionRows(filePath, options = {}) {
   const sourceId = options.sourceId || sourceNamespace(path.dirname(filePath));
   const sessionId = `${path.basename(filePath, path.extname(filePath))}@${sourceId}`;
   const content = String(fs.readFileSync(filePath, 'utf8') || '');
-  const lines = content.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = content.split(/\r?\n/);
   const msgGroups = new Map(); // message.id -> [{ usage, model, createdAt }]
 
-  for (const line of lines) {
+  for (const [index, rawLine] of lines.entries()) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let obj;
     try {
-      const obj = JSON.parse(line);
-      if (obj.type !== 'assistant') continue;
-      const msg = obj.message;
-      if (!msg || !msg.usage) continue;
-      // Message ID: some tools set msg.id, Proma uses obj.uuid instead.
-      const msgId = msg?.id || obj.uuid;
-      if (!msgId) continue;
-
-      const model = msg.model || obj._channelModelId || 'unknown';
-      const u = msg.usage;
-      const input = numberValue(u.input_tokens || u.inputTokens);
-      const output = numberValue(u.output_tokens || u.outputTokens);
-      const cacheRead = numberValue(u.cache_read_input_tokens || u.cacheReadInputTokens);
-      const cacheWrite = numberValue(u.cache_creation_input_tokens || u.cacheCreationInputTokens);
-      const createdAt = timestampMs(obj._createdAt || obj.createdAt || obj.created_at || obj.timestamp);
-
-      if (!msgGroups.has(msgId)) msgGroups.set(msgId, []);
-      msgGroups.get(msgId).push({ sessionId, model, input, output, cacheRead, cacheWrite, createdAt });
+      obj = JSON.parse(line);
     } catch (_) {
-      // skip malformed lines
+      if (index === lines.length - 1) continue;
+      throw Object.assign(new Error('invalid Proma session record'), { code: 'PROMA_INVALID_USAGE' });
     }
+    if (obj?.type !== 'assistant') continue;
+    const msg = obj.message;
+    if (!msg || !msg.usage) continue;
+    // Message ID: some tools set msg.id, Proma uses obj.uuid instead.
+    const msgId = msg?.id || obj.uuid;
+    if (!msgId) continue;
+
+    const model = msg.model || obj._channelModelId || 'unknown';
+    const u = msg.usage;
+    const input = numberValue(u.input_tokens || u.inputTokens);
+    const output = numberValue(u.output_tokens || u.outputTokens);
+    const cacheRead = numberValue(u.cache_read_input_tokens || u.cacheReadInputTokens);
+    const cacheWrite = numberValue(u.cache_creation_input_tokens || u.cacheCreationInputTokens);
+    const createdAt = timestampMs(obj._createdAt || obj.createdAt || obj.created_at || obj.timestamp);
+
+    if (!msgGroups.has(msgId)) msgGroups.set(msgId, []);
+    msgGroups.get(msgId).push({ sessionId, model, input, output, cacheRead, cacheWrite, createdAt });
   }
 
   // Collapse each message group: take the entry with the largest total tokens
@@ -150,8 +154,9 @@ function jsonlFiles(root) {
     return fs.readdirSync(root)
       .filter((n) => n.endsWith('.jsonl'))
       .map((n) => path.join(root, n));
-  } catch (_) {
-    return [];
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
   }
 }
 
@@ -159,15 +164,15 @@ function jsonlFiles(root) {
 // derive several windows (and history) from the same immutable snapshot rather
 // than reopening every JSONL file once for each period.
 function collectPromaRows(options = {}) {
-  const roots = Array.isArray(options.roots) ? options.roots : [PROMA_ROOT];
+  const roots = Array.isArray(options.roots) ? options.roots : [path.join(options.homeDir || os.homedir(), '.proma', 'agent-sessions')];
   const rows = [];
   for (const root of roots) {
     const sourceId = sourceNamespace(root);
     for (const filePath of jsonlFiles(root)) {
       try {
         rows.push(...collectSessionRows(filePath, { sourceId }));
-      } catch (_) {
-        // skip unreadable files
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
       }
     }
   }

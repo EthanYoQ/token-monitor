@@ -35,7 +35,7 @@ Only the app, agent and packaging scripts run `ensure:tokscale`, which installs 
 - **Project identity is ours.** Only a decoded path counts, hashed by `projectIdentity()`; an opaque workspace key is left for the resolvers, since hashing it would mint a second identity for a directory other clients name correctly.
 - **Defensive extraction.** `src/shared/usage.js` deep-walks tokscale's JSON and never assumes a fixed layout.
 - **Targeted watch scans.** Changed paths map back to clients, and those partitions are scanned in one unioned `--today` scan. That makes the client id a partition key — see the partition invariants in `docs/providers/README.md`.
-- **Unavailable OCR source.** A failed Open Code Review read keeps its last complete runtime rows for live periods and reports failed collection. Healthy clients continue daily archive capture and normal full-scan scheduling. Archive writes retain earlier OCR observations for the same date and exclude new OCR observations until a successful read. A mixed live snapshot preserves known client components and marks unresolved shared-model components unclassified. The collector keeps the last complete persisted anchor until OCR succeeds.
+- **Unavailable local sources.** A failed Open Code Review or Proma read keeps that source's last complete runtime rows for live periods and reports failed collection. Healthy clients continue daily archive capture and normal full-scan scheduling. Archive writes retain earlier observations for the failed source and exclude new observations until a successful read. A mixed live snapshot preserves known client components and marks unresolved shared-model components unclassified. The collector keeps the last complete persisted anchor until those sources succeed. Proma uses the collector's `homeDir`; missing sources are empty, while other read failures and malformed complete JSONL records fail the read. An unfinished final line waits for its next write.
 
 ### Watching
 
@@ -66,6 +66,14 @@ The widget runs the collector, the usage transform (`src/shared/usage/usageTrans
 - The worker is handed the transform's settings as data, `USAGE_TRANSFORM_SETTING_KEYS`, and `applySettingsPatch()` sends it the new values as soon as they are saved, ahead of the reconfigure settle delay. `settings:update` resolves only once the worker confirms them, so once pausing the session archive reports done, nothing more is captured, as in-process. A setting the transform starts reading has to be added to that list, or the worker transforms without it.
 - A worker that fails emits `usage-worker-failed` and falls back to the in-process collector, and later runtimes stay in-process for the rest of the process. `TOKEN_MONITOR_USAGE_WORKER=0` pins the in-process collector from the start.
 - Quit stays synchronous and does not wait for the worker, which may never get to handle its stop. Every subprocess registered through `createSubprocessTermination()` on the worker is listed in a table shared with the main thread while it runs, and `stopAll()` sends those the `SIGTERM` the in-process `stop()` would have sent. A subprocess spawned on the worker any other way would outlive a quit.
+
+## History presentation
+
+`normalizeHistory` creates compact `tokenDays` from all retained source contributions before capping the rich daily rows at 370 days. Each entry holds a date, total tokens and per-client tokens. Local cache coercion preserves this evidence. `mergeHistories` computes lifetime active days, peaks and streaks from its date union only when every participant has complete date evidence. Legacy or unavailable device history marks these metrics as retained-date results. Monthly data cannot recover missing date overlap or daily peaks.
+
+`syncPayload` removes this local evidence before device upload. Desktop `presentUsage` consumes it before returning bounded renderer history. Account projection is never persisted into collector snapshots or uploaded to a Hub. Main preview, complete history and fixed token ranges use the same account projection policy. Fixed-range device detail retains local device attribution. Remote history is fetched once per local revision when account presentation needs it, and the preview stays unavailable until that history arrives.
+
+Official Codex summary fields are separate from all-tool date metrics. Local cumulative active time remains the sum supplied by the current collector and may include overlapping work. Limits render unknown percentages without a percentage meter; an observed zero remains zero.
 
 ## Limits collector
 

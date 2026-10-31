@@ -164,8 +164,8 @@ function parseKiroUsage(rawOutput, now = new Date()) {
   let creditsPercent = firstNumber(stripped, /█+\s*(\d+)%/);
   const matchedPercent = creditsPercent !== null;
 
-  let creditsUsed = 0;
-  let creditsTotal = 50; // free-tier default, matching upstream
+  let creditsUsed = null;
+  let creditsTotal = null;
   const credits = stripped.match(/\((\d+\.?\d*)\s+of\s+(\d+)\s+covered/);
   const matchedCredits = Boolean(credits);
   if (credits) {

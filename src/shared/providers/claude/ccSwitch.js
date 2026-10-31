@@ -20,6 +20,7 @@ function readCcSwitchClaudeRows(dbPath = DB_PATH) {
   const { DatabaseSync } = require('node:sqlite');
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
+    db.exec('BEGIN');
     const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name));
     if (!tables.has('usage_daily_rollups') || !tables.has('proxy_request_logs')) throw new Error('unsupported CC-Switch usage schema');
     const rollups = db.prepare(`
@@ -39,9 +40,9 @@ function readCcSwitchClaudeRows(dbPath = DB_PATH) {
         AND status_code BETWEEN 200 AND 299
       GROUP BY date(created_at, 'unixepoch', 'localtime'), model
     `).all();
-    // CC-Switch inserts archived request totals and deletes their detail rows
-    // in one SAVEPOINT. The tables therefore hold disjoint request sets even
-    // when a later request falls on an already archived local day.
+    // One snapshot keeps requests visible if CC-Switch archives them between
+    // the two reads. Closing the connection also rolls back a failed read.
+    db.exec('COMMIT');
     return [...rollups, ...logs].map((row) => {
       const date = String(row.date || '');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('invalid CC-Switch usage date');
@@ -80,6 +81,7 @@ function loadCcSwitchClaudeRows(options = {}) {
       return rows;
     }
   } catch (error) {
+    options.onReadFailure?.(error);
     options.logger?.(`CC-Switch usage read failed: ${error.message}`);
   }
   try {

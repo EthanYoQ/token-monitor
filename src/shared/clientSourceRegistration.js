@@ -4,17 +4,17 @@ const path = require('node:path');
 
 // WSL discovery markers are home-relative Linux paths in scan order. A hostCheckId
 // marks only sources where the same path is a host directory on every platform;
-// file sources, alternate roots and platform-specific paths remain explicit in
+// file sources and platform-specific paths remain explicit in
 // clientSourceRoots().
 const SOURCE_MARKERS = [
   { marker: '.claude/projects', client: 'claude' },
   { marker: '.claude/transcripts', client: 'claude' },
   { marker: '.codex/sessions', client: 'codex' },
   { marker: '.local/share/opencode', client: 'opencode' },
-  { marker: '.openclaw/agents', client: 'openclaw' },
-  { marker: '.clawdbot/agents', client: 'openclaw' },
-  { marker: '.moltbot/agents', client: 'openclaw' },
-  { marker: '.moldbot/agents', client: 'openclaw' },
+  { marker: '.openclaw/agents', client: 'openclaw', hostCheckId: 'openclaw-agents' },
+  { marker: '.clawdbot/agents', client: 'openclaw', hostCheckId: 'openclaw-agents' },
+  { marker: '.moltbot/agents', client: 'openclaw', hostCheckId: 'openclaw-agents' },
+  { marker: '.moldbot/agents', client: 'openclaw', hostCheckId: 'openclaw-agents' },
   { marker: '.hermes', client: 'hermes' },
   { marker: '.kimi/sessions', client: 'kimi' },
   { marker: '.kimi-code/sessions', client: 'kimi' },

@@ -36,6 +36,7 @@ test('tool diagnostics summarize complete health and render three semantic group
   assert.match(summary, /if \(counts\) return t\('settings\.summary\.toolsHealth'/);
   assert.match(summary, /return t\('settings\.summary\.tools'/);
   assert.match(group, /group\.id === 'source'/);
+  assert.match(group, /if \(clientId === 'workbuddy'\) \{[^]*?t\('settings\.tools\.health\.workbuddyCustomSourceHint'\)[^]*?body\.append\(hint\);/);
   assert.match(group, /group\.id === 'collection'/);
   assert.match(group, /pathInfo\.exists \? ' found' : pathInfo\.pending \? ' pending'/);
   assert.match(actions, /role', 'status'/);

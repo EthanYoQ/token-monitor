@@ -15,6 +15,7 @@ const {
   cleanSecret,
   errorWithStatus,
   fetchJson,
+  numberOrNull,
   nowIso,
   providerStatusFromError
 } = require('../../limits/providerHelpers');
@@ -33,8 +34,8 @@ function deepseekToken(env = process.env, explicitKey = '') {
 function selectFundedRow(rows) {
   const parsed = [];
   for (const row of rows || []) {
-    const amount = Number(row && row.total_balance);
-    const paid = Number(row && row.topped_up_balance);
+    const amount = numberOrNull(row?.total_balance);
+    const paid = numberOrNull(row?.topped_up_balance);
     const currency = String((row && row.currency) || '').trim().toUpperCase();
     if (!Number.isFinite(amount) || !Number.isFinite(paid) || !currency) continue;
     parsed.push({ currency, amount, paid });

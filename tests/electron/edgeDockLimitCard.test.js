@@ -170,7 +170,7 @@ test('the dock hands the shared view every dependency it destructures', () => {
     .slice(view.indexOf('const {'), view.indexOf('} = deps;'))
     .replace('const {', '')
     .split('\n')
-    .map((line) => line.replace(/\/\/.*$/, '').trim())
+    .map((line) => line.trim().replace(/\/\/.*$/, '').trim())
     // A dependency with a default is one the host may legitimately omit.
     .filter((line) => line && !line.includes('='))
     .map((entry) => entry.split(':')[0].replace(',', '').trim())
@@ -962,4 +962,13 @@ test('a stale row is dimmed by the page rule, not recoloured', () => {
   assert.equal(row.classNames.has('stale'), true);
   const dock = fs.readFileSync(path.join(root, 'src/electron/renderer/edgeDock/dock.js'), 'utf8');
   assert.doesNotMatch(dock, /freshness\.tone === 'stale'/, 'the card no longer paints staleness orange on its own');
+});
+
+test('unknown limit percentages render unknown with no meter while actual zero stays visible', () => {
+  const unknown = dockView().limitWindowNode('Weekly', { remainingPercent: null, usedPercent: null }, '#fff');
+  assert.doesNotMatch(unknown.text, /(?:0|100)%/);
+  assert.equal(unknown.find('limit-meter'), null);
+  const zero = dockView().limitWindowNode('Weekly', { remainingPercent: 0, usedPercent: 100 }, '#fff');
+  assert.match(zero.text, /0%/);
+  assert.ok(zero.find('limit-meter'));
 });

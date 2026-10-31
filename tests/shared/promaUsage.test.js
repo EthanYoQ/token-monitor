@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { buildPromaHistoryGraph, buildTokscaleJson, buildPromaPeriods, PROMA_ROOT } = require('../../src/shared/providers/proma/usage');
+const { buildPromaHistoryGraph, buildTokscaleJson, buildPromaPeriods, collectPromaRows, PROMA_ROOT } = require('../../src/shared/providers/proma/usage');
 const { extractUsageFromTokscale, mergePeriods } = require('../../src/shared/usage');
 const { localIso } = require('../helpers/localTime');
 
@@ -30,6 +30,54 @@ function assistantRow({ id, model = 'deepseek-v4-pro', createdAt, input = 0, out
     }
   };
 }
+
+test('Proma uses the supplied home and explicit roots retain precedence', (t) => {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proma-home-'));
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  const root = path.join(homeDir, '.proma', 'agent-sessions');
+  const extra = path.join(homeDir, 'extra');
+  fs.mkdirSync(root, { recursive: true });
+  fs.mkdirSync(extra);
+  writeJsonl(path.join(root, 'session.jsonl'), [assistantRow({ id: 'home', input: 123 })]);
+  writeJsonl(path.join(extra, 'session.jsonl'), [assistantRow({ id: 'explicit', input: 45 })]);
+  const readdir = fs.readdirSync;
+  t.mock.method(fs, 'readdirSync', (dir, ...args) => dir === PROMA_ROOT ? [] : readdir(dir, ...args));
+  assert.equal(collectPromaRows({ homeDir })[0]?.input, 123);
+  assert.equal(collectPromaRows({ homeDir, roots: [extra] })[0]?.input, 45);
+  assert.deepEqual(collectPromaRows({ homeDir, roots: [] }), []);
+});
+
+test('Proma reports unreadable directories and files but permits missing sources', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proma-read-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(collectPromaRows({ roots: [path.join(root, 'missing')] }), []);
+  const readdir = fs.readdirSync;
+  const listing = t.mock.method(fs, 'readdirSync', (dir, ...args) => {
+    if (dir === root) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    return readdir(dir, ...args);
+  });
+  assert.throws(() => collectPromaRows({ roots: [root] }), { code: 'EACCES' });
+  listing.mock.restore();
+  const file = path.join(root, 'session.jsonl');
+  writeJsonl(file, [assistantRow({ id: 'one', input: 123 })]);
+  const read = fs.readFileSync;
+  t.mock.method(fs, 'readFileSync', (candidate, ...args) => {
+    if (candidate === file) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    return read(candidate, ...args);
+  });
+  assert.throws(() => collectPromaRows({ roots: [root] }), { code: 'EACCES' });
+});
+
+test('Proma rejects complete malformed records and tolerates an unfinished final line', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proma-lines-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'session.jsonl');
+  const good = `${JSON.stringify(assistantRow({ id: 'one', input: 123 }))}\n`;
+  fs.writeFileSync(file, good + '{"type":"assistant"');
+  assert.equal(collectPromaRows({ roots: [root] })[0]?.input, 123);
+  fs.appendFileSync(file, '\n');
+  assert.throws(() => collectPromaRows({ roots: [root] }), { code: 'PROMA_INVALID_USAGE' });
+});
 
 test('Proma daily window filters messages before per-model aggregation', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'proma-usage-'));

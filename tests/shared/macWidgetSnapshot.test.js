@@ -518,10 +518,63 @@ test('builds a local seven-day Widget trend from live usage without double count
     210, 0, 0, 0, 123, 99
   ]);
   assert.deepEqual(snapshot.periods.total.trend.points, [{
-    date: '2026-08', totalTokens: 333, costUsd: 3.6
+    date: '2026-08', totalTokens: 200, costUsd: 2
   }]);
   assert.equal(snapshot.periods.month.models[0].sharePercent, 100);
   assert.equal(snapshot.periods.total.models[0].sharePercent, 100);
+});
+
+test('live local corrections replace retained trend observations as complete token and cost pairs', () => {
+  const snapshot = buildSnapshot({
+    periods: {
+      today: { totalTokens: 50, costUsd: 1 },
+      month: { totalTokens: 60, costUsd: 2 }
+    },
+    history: {
+      daily: [
+        { date: '2026-09-30', tokens: 80, cost: 8 },
+        { date: '2026-10-13', tokens: 100, cost: 0.5 }
+      ],
+      monthly: [
+        { month: '2026-09', tokens: 70, cost: 9 },
+        { month: '2026-10', tokens: 100, cost: 0.5 }
+      ]
+    }
+  }, { now: new Date(2026, 9, 13, 12) });
+  const today = { date: '2026-10-13', totalTokens: 50, costUsd: 1 };
+  assert.deepEqual(snapshot.periods.day.trend.points.at(-1), today);
+  assert.deepEqual(snapshot.periods.month.trend.points.at(-1), today);
+  assert.deepEqual(snapshot.periods.total.trend.points, [
+    { date: '2026-09', totalTokens: 70, costUsd: 9 },
+    { date: '2026-10', totalTokens: 60, costUsd: 2 }
+  ]);
+});
+
+test('local live periods cannot overwrite account-defined history observations', () => {
+  const codexAccountActivity = { headlineSource: 'codex-account', detailSource: 'local' };
+  const snapshot = buildSnapshot({
+    periods: { today: { totalTokens: 300, costUsd: 3 }, month: { totalTokens: 400, costUsd: 4 } },
+    history: {
+      daily: [{ date: '2026-10-13', tokens: 200, cost: 1, codexAccountActivity }],
+      monthly: [{ month: '2026-10', tokens: 200, cost: 1, codexAccountActivity }]
+    }
+  }, { now: new Date(2026, 9, 13, 12) });
+  assert.deepEqual(snapshot.periods.day.trend.points.at(-1), { date: '2026-10-13', totalTokens: 200, costUsd: 1 });
+  assert.deepEqual(snapshot.periods.month.trend.points.at(-1), { date: '2026-10-13', totalTokens: 200, costUsd: 1 });
+  assert.deepEqual(snapshot.periods.total.trend.points, [{ date: '2026-10', totalTokens: 200, costUsd: 1 }]);
+});
+
+test('missing live periods preserve history while an observed zero replaces the old observation', () => {
+  const history = { daily: [{ date: '2026-10-13', tokens: 100, cost: 1 }], monthly: [{ month: '2026-10', tokens: 100, cost: 1 }] };
+  const options = { now: new Date(2026, 9, 13, 12) };
+  const missing = buildSnapshot({ history }, options);
+  assert.equal(missing.periods.day.trend.points.at(-1).totalTokens, 100);
+  assert.equal(missing.periods.month.trend.points.at(-1).totalTokens, 100);
+  assert.equal(missing.periods.total.trend.points.at(-1).totalTokens, 100);
+  const zero = buildSnapshot({ history, periods: { today: { totalTokens: 0, costUsd: 0 }, month: { totalTokens: 0, costUsd: 0 } } }, options);
+  assert.equal(zero.periods.day.trend.points.at(-1).totalTokens, 0);
+  assert.equal(zero.periods.month.trend.points.at(-1).costUsd, 0);
+  assert.equal(zero.periods.total.trend.points.at(-1).totalTokens, 0);
 });
 
 test('keeps MONTH inside the current calendar month and buckets TOTAL by month', () => {

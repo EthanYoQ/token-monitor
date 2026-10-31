@@ -163,7 +163,10 @@ function clientSourceRoots(clientsCsv, options = {}) {
     }
   };
   const claudeRoots = claudeSessionRoots({ homeDir: home });
-  add('claude', ['claude-projects', claudeRoots.projects], ['claude-transcripts', claudeRoots.transcripts]);
+  const ccSwitchDbPath = options.ccSwitchDbPath || path.join(home, '.cc-switch', 'cc-switch.db');
+  add('claude', ['claude-projects', claudeRoots.projects], ['claude-transcripts', claudeRoots.transcripts],
+    ...(options.ccSwitchClaudeEnabled === true && platform === 'win32'
+      ? [['claude-cc-switch-db', path.dirname(ccSwitchDbPath), ccSwitchDbPath]] : []));
   const codexHome = nonBlankEnvPath('CODEX_HOME', path.join(home, '.codex'));
   add(
     'codex',
@@ -194,7 +197,7 @@ function clientSourceRoots(clientsCsv, options = {}) {
   const tokscaleHome = tokscaleHomeDir({ env, platform, homeDir: home });
   const xdgHome = xdgDataHome(tokscaleHome, env);
   add('opencode', ['opencode-data', path.join(xdgHome, 'opencode')]);
-  add('openclaw', ['openclaw-agents', path.join(home, '.openclaw', 'agents')]);
+  add('openclaw', ...simpleHostSourceRoots('openclaw', home));
   // Amp (Sourcegraph / AmpCode): tokscale reads the XDG-data root on every
   // platform — clients.rs declares PathRoot::XdgData + relative "amp/threads",
   // pattern T-*.json (the thread JSON holds a usageLedger and per-assistant-
@@ -343,16 +346,13 @@ function clientSourceRoots(clientsCsv, options = {}) {
     ['codebuddy-projects', path.join(home, '.codebuddy', 'projects')],
     ...[...new Set(codebuddyExtLogRoots)].map((dir) => ['codebuddy-extension-logs', dir])
   );
-  // WorkBuddy (Tencent): watch only the detailed session dirs (projects/*.jsonl,
-  // the preferred source) — not the whole app homes, whose config / auth churn
-  // would add polling load and spurious ticks with no usage change. WorkBuddy
-  // 5.5 moved to ~/.workbuddy-ai; keep the legacy ~/.workbuddy root because
-  // tokscale 4.17.0 still scans both. A db-only install still refreshes via the
-  // periodic full tick; the WSL markers stay broader so those homes are found.
+  // WorkBuddy reads detailed projects and falls back to each home's database.
   add(
     'workbuddy',
     ['workbuddy-projects', path.join(home, '.workbuddy', 'projects')],
-    ['workbuddy-projects', path.join(home, '.workbuddy-ai', 'projects')]
+    ['workbuddy-projects', path.join(home, '.workbuddy-ai', 'projects')],
+    ['workbuddy-db', path.join(home, '.workbuddy'), path.join(home, '.workbuddy', 'workbuddy.db')],
+    ['workbuddy-db', path.join(home, '.workbuddy-ai'), path.join(home, '.workbuddy-ai', 'workbuddy.db')]
   );
   // Proma — session transcripts at ~/.proma/agent-sessions/*.jsonl
   add('proma', ['proma-sessions', path.join(home, '.proma', 'agent-sessions')]);

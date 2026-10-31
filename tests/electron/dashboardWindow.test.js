@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-const { projectAccountActivityToHistory, normalizeAccountActivity } = require('../../src/shared/providers/codex/accountActivity');
+const { presentUsage, normalizeAccountActivity } = require('../../src/shared/providers/codex/accountActivity');
 
 const rootDir = path.join(__dirname, '..', '..');
 const read = (...p) => fs.readFileSync(path.join(rootDir, ...p), 'utf8');
@@ -83,11 +83,11 @@ test('dashboard history uses the same validated account projection as Home', asy
     lifetimeTokens: 100, dailyUsageBuckets: [{ startDate: today, tokens: 100 }]
   } }, 'account-a');
   const local = { daily: [{ date: today, tokens: 30, perClient: { codex: { tokens: 20 }, claude: { tokens: 10 } } }], monthly: [{ month, tokens: 30, perClient: { codex: { tokens: 20 }, claude: { tokens: 10 } } }], summary: { totalTokens: 30 } };
-  const settings = { codexAccountActivityEnabled: true };
-  const presented = { periods: { allTime: { totalTokens: 110 } }, codexAccountActivity: { status: 'applied', source: snapshot.source, fetchedAt: snapshot.fetchedAt, lifetimeTokens: snapshot.lifetimeTokens } };
+  const settings = { codexAccountActivityEnabled: true, clients: 'codex,claude', allTimeSince: '2024-01-01' };
+  const original = { periods: { allTime: { totalTokens: 30, clients: { codex: 20, claude: 10 } } } };
   const getHistory = vm.runInNewContext(`(${body})`, {
-    settings, latestStats: {}, codexAccountActivity: { snapshot: () => snapshot }, electronPresentationStats: () => presented,
-    projectAccountActivityToHistory, historyResolverOptions: () => ({}), getCompleteHistory: async () => local,
+    settings, latestStats: original, codexAccountActivity: { snapshot: () => snapshot, multipleAccounts: () => false },
+    presentUsage, historyResolverOptions: () => ({}), getCompleteHistory: async () => local,
     resolveCompleteHistoryWithDevices: async () => ({ history: local, deviceHistories: [] }),
     completeHistorySource: () => 'local', fixedPeriodHistoryMeta: () => ({}), projectModelAliasHistory: (history) => history
   });
@@ -125,9 +125,10 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
     locale: 'zh-CN', heatmapMetric: 'tokens', motion: 'none'
   };
   const renderActivity = dashboardFunction('renderActivity', 'function renderNow()', {
-    state, els: { cards, heatmap, scopeNote, heatmapScope },
+    state, els: { cards, heatmap, scopeNote, heatmapScope, accountCards: { innerHTML: '', classList: { toggle() {} } } },
     charts: {
       computeHeatmapIntensities: (rows) => rows, contribHeatmap: () => ({ cells: [{}], weeks: 1 }), heatmapSvg: () => '<svg/>',
+      accountStatsCards: require('../../src/electron/renderer/usageCharts').accountStatsCards,
       statsCards: () => [{ key: 'totalTokens', kind: 'tokens', value: 100 }, { key: 'activeTimeMs', kind: 'duration', value: 60_000 }],
       statsCardsHtml: (items, options) => items.map((item) => options.label(item.key)).join('|')
     },
@@ -137,7 +138,7 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
     formatDurationCompact: () => '', formatCompact: () => '', formatCostCompact: () => ''
   });
   renderActivity();
-  assert.match(cards.innerHTML, /trends\.activeTime.*dashboard\.scope\.local/);
+  assert.match(cards.innerHTML, /trends\.activeTime/);
   assert.equal(scopeNote.textContent, 'dashboard.scope.accountOverview');
   assert.equal(heatmapScope.textContent, 'dashboard.scope.accountHeatmap');
   state.heatmapMetric = 'cost';
@@ -153,7 +154,7 @@ test('account-backed overview labels local-only cards and both heatmap scopes', 
   state.history.codexAccountActivity.status = 'conflict';
   renderActivity();
   assert.match(scopeNote.textContent, /usage\.codexAccountActivity\.conflict/);
-  assert.match(cards.innerHTML, /trends\.activeTime.*dashboard\.scope\.local/);
+  assert.match(cards.innerHTML, /trends\.activeTime/);
   assert.equal(heatmapScope.textContent, 'dashboard.scope.localHeatmap');
   delete state.history.codexAccountActivity;
   renderActivity();
