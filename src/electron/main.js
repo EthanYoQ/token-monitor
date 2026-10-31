@@ -7321,6 +7321,7 @@ app.whenReady().then(() => {
     updateRendererViewState(patch);
   });
   ipcMain.on('window:autoHideInteraction', (event, active) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     if (event.sender === mainWindow?.webContents) mainWindowAutoHide?.setInteracting(active === true);
   });
   ipcMain.handle('floatingBubble:expand', () => expandFloatingBubble());
