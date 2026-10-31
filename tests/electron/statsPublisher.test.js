@@ -212,9 +212,9 @@ test('the pulled list completes its snapshot with the local record that snapshot
   assert.match(inject[1], /if \(mode !== 'local'\) snapshotLocalDevices\.set\(stats, \{ localDevice: lastCollectedDevice \}\);\s*return stats;\s*$/);
 });
 
-test('a snapshot stays addressable after newer ones are published', () => {
+test('only the two most recently stamped snapshots remain addressable by default', () => {
   let source = 3;
-  const snapshots = createRendererSnapshots({ source: () => source, limit: 2 });
+  const snapshots = createRendererSnapshots({ source: () => source });
   const first = { periods: {} };
   const copy = { periods: {}, limits: {} };
   const stamped = snapshots.stamp(first, copy);
@@ -242,4 +242,15 @@ test('a snapshot stays addressable after newer ones are published', () => {
   assert.deepEqual(snapshots.stamp(first, {}).snapshot, { id: 1, source: 3 });
   assert.equal(snapshots.get(1), first);
   assert.equal(snapshots.get(2), null, 'the re-stamped snapshot counts as recent');
+});
+
+test('an explicit snapshot retention limit remains supported', () => {
+  const snapshots = createRendererSnapshots({ source: () => 0, limit: 3 });
+  const first = { periods: {} };
+  snapshots.stamp(first, {});
+  snapshots.stamp({}, {});
+  snapshots.stamp({}, {});
+  assert.equal(snapshots.get(1), first);
+  snapshots.stamp({}, {});
+  assert.equal(snapshots.get(1), null);
 });

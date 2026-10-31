@@ -51,7 +51,7 @@ const {
 const { kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./providers/proma/usage');
 const { buildOpenCodeReviewHistoryGraph, buildOpenCodeReviewPeriods, collectOpenCodeReviewRows,
-  openCodeReviewHistoryRevision } = require('./providers/open-code-review/usage');
+  compactOpenCodeReviewRows, openCodeReviewHistoryRevision } = require('./providers/open-code-review/usage');
 const { DB_PATH: CC_SWITCH_DB_PATH, loadCcSwitchClaudeRows, admittedCcSwitchClaudeRows, ccSwitchClaudeJson, ccSwitchClaudeGraph } = require('./providers/claude/ccSwitch');
 const {
   buildQoderCnHistoryGraph,
@@ -1229,15 +1229,17 @@ async function collectUsageOnce(options) {
   if (normalizedClients) {
     if (includesOpenCodeReview && (!targetRequested || targetClientSet.has('open-code-review') || options.includeHistory)) {
       try {
-        openCodeReviewRows = await collectOpenCodeReviewRows({ homeDir: options.homeDir,
+        const rows = await collectOpenCodeReviewRows({ homeDir: options.homeDir,
           cacheDir: options.openCodeReviewCacheDir, env: options.env, platform: platformValue, signal: options.signal });
         throwIfAborted(options.signal);
-        if (options.openCodeReviewState) options.openCodeReviewState.rows = openCodeReviewRows;
+        ocrHistoryRevision = openCodeReviewHistoryRevision(rows, collectedAt);
+        openCodeReviewRows = compactOpenCodeReviewRows(rows);
+        if (options.openCodeReviewState) options.openCodeReviewState.snapshot = openCodeReviewRows;
       } catch (err) {
         if (options.signal?.aborted) throw abortReason(options.signal);
         if (err?.name === 'AbortError' || err?.code === 'ABORT_ERR') throw err;
         openCodeReviewReadFailed = true;
-        openCodeReviewRows = options.openCodeReviewState?.rows || null;
+        openCodeReviewRows = options.openCodeReviewState?.snapshot || null;
         if (anchorUsed && !anchor.todayPartitions?.['open-code-review'] && !openCodeReviewRows) {
           anchorUsed = false;
           ocrHistoryRevision = undefined;
@@ -1248,7 +1250,6 @@ async function collectUsageOnce(options) {
       }
       if (openCodeReviewRows) {
         if (!openCodeReviewReadFailed) {
-          ocrHistoryRevision = openCodeReviewHistoryRevision(openCodeReviewRows, collectedAt);
           if (anchorUsed && ocrHistoryRevision !== anchor.openCodeReviewHistoryRevision) {
             return collectUsageOnce({ ...options, now: collectedAt, todayOnlyAnchor: null, targetClients: null });
           }
@@ -2689,7 +2690,7 @@ function startCollector(options) {
   // later full/history tick instead of losing it at the tick boundary.
   let liveDailyHistoryDays = {};
   let qoderCnHistoryGraph = null;
-  const openCodeReviewState = { rows: null };
+  const openCodeReviewState = { snapshot: null };
   let lastFullScanAt = 0;
   let pendingWaiters = [];
   let debounceTimer = null;
@@ -3449,7 +3450,7 @@ function startCollector(options) {
     if (stopped) return;
     stopped = true;
     runtimeAbortController.abort(new Error('collector stopped'));
-    openCodeReviewState.rows = null;
+    openCodeReviewState.snapshot = null;
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     if (intervalTimer) { clearTimeout(intervalTimer); intervalTimer = null; }
     clearRolloverHistoryRetry();

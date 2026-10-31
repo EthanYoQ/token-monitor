@@ -4,7 +4,7 @@ ids: [codex]
 read_when:
   - Changing Codex session metadata, T3 title lookup, context occupancy or turn state
   - Changing Codex OAuth/RPC limits, managed accounts or workspace identity
-  - Changing Codex account activity or its period presentation
+  - Changing Codex account activity, cloud observation or its period presentation
   - Changing Codex login, system-account switching or reset forecasts
 ---
 
@@ -25,6 +25,20 @@ Dashboard replaces Codex on reported account dates and retains local Codex on mi
 If another synced device contributes Codex in any displayed period, or multiple logins have been observed locally, the account overlap is unknown and projection retains the original aggregate. A lower lifetime reading requires a matching second live read; an older timestamp is ignored. A reading older than one hour is marked stale and remains the last known account value.
 
 The account total is disabled by default. The user can enable it in Settings after verifying that local Codex history belongs to the current login.
+
+## Observed cloud usage
+
+The account activity opt-in also enables a desktop-only observer for the live ChatGPT login. It connects to `wss://codex-cloud-backend.chatgpt.com/` with the existing `undici` WebSocket. The observer reads `CODEX_HOME/auth.json`, or `~/.codex/auth.json`, and requires ChatGPT auth whose composite account identity matches the live login. API-key auth does not connect. Credentials remain in main-process memory and are sent only to the fixed official endpoint through its bearer subprotocol and account header.
+
+The observer initializes the connection, discovers unarchived threads with `thread/list`, and subscribes to active threads with `thread/resume({ threadId, excludeTurns: true })`. Discovery follows `nextCursor` through empty and short pages. It never starts a turn, sends tool responses or overrides thread configuration. Discovery runs every 30 seconds. RPC deadlines and reconnect backoff bound failed attempts; disabling, deselecting Codex or quitting closes the socket and cancels timers.
+
+`thread/tokenUsage/updated` supplies the official thread cumulative `total.totalTokens`. Each thread has its own high-water counter. The first reading establishes a baseline. Later increases count once; equal or decreasing readings add no tokens. Cached input and reasoning output are not added again. A decreasing counter breaks date continuity and does not reset the high-water mark. The reported cumulative remains separate from the increments observed after the baseline.
+
+Home shows each thread separately for today, this month and since observation began. No cloud thread counts are summed together or added to account or local totals, because parent/child overlap is unknown. The first reading and any period without a measured interval are unknown, not zero. An uninterrupted interval within one device-local day can enter that day's observed count. A cross-day interval is undated; it can enter the month only when continuity and that month are known. Disconnects, restarts, clock rollback and time-zone changes break continuity. Recovered increases then enter only observed cumulative and undated counts.
+
+The observer saves IDs, numeric counters and observation times atomically in `codex-cloud-usage.json`, partitioned by the hashed live account identity. It publishes changed token counts only after a successful numeric write. A failed write retains the committed baseline and reconnects. The file contains no credentials, email addresses, titles or conversation text. Account and socket generations reject late responses after a switch.
+
+Coverage is always `observed-only`. The source has no verified historical replay, billing timestamp or complete hidden-child coverage. Idle threads may supply no initial event. A successful discovery pass proves only that its pagination completed. It does not establish full account coverage. The observer remains outside per-device uploads and Hub aggregation.
 
 ## Session metadata and context
 

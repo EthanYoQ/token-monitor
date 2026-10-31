@@ -288,20 +288,71 @@ async function collectOpenCodeReviewRows(options = {}) {
   return [...unique.values()];
 }
 
-function periodJson(rows) {
-  const groups = new Map();
-  for (const row of rows) {
-    const key = JSON.stringify([row.sessionId, row.model]);
-    let entry = groups.get(key);
-    if (!entry) {
-      entry = { client: CLIENT, sessionId: `${CLIENT}:${row.sessionId}`, model: row.model,
-        input: 0, output: 0, cacheRead: 0, cacheWrite: 0, messageCount: 0 };
-      groups.set(key, entry);
+class CompactUsageSnapshot {
+  #groups = [];
+  #group;
+  #createdAt;
+  #input;
+  #output;
+  #cacheRead;
+  #cacheWrite;
+
+  constructor(rows) {
+    this.#group = new Uint32Array(rows.length);
+    this.#createdAt = new Float64Array(rows.length);
+    this.#input = new Float64Array(rows.length);
+    this.#output = new Float64Array(rows.length);
+    this.#cacheRead = new Float64Array(rows.length);
+    this.#cacheWrite = new Float64Array(rows.length);
+    const groupIds = new Map();
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i];
+      const key = JSON.stringify([row.sessionId, row.model]);
+      let group = groupIds.get(key);
+      if (group === undefined) {
+        group = this.#groups.length;
+        groupIds.set(key, group);
+        this.#groups.push({ sessionId: row.sessionId, model: row.model });
+      }
+      this.#group[i] = group;
+      this.#createdAt[i] = row.createdAt;
+      this.#input[i] = row.input;
+      this.#output[i] = row.output;
+      this.#cacheRead[i] = row.cacheRead;
+      this.#cacheWrite[i] = row.cacheWrite;
     }
-    for (const field of ['input', 'output', 'cacheRead', 'cacheWrite']) entry[field] += row[field];
-    entry.messageCount += 1;
   }
-  return { entries: [...groups.values()] };
+
+  visit(visit) {
+    for (let i = 0; i < this.#group.length; i += 1) {
+      const { sessionId, model } = this.#groups[this.#group[i]];
+      visit(sessionId, model, this.#createdAt[i], this.#input[i], this.#output[i], this.#cacheRead[i], this.#cacheWrite[i]);
+    }
+  }
+}
+
+function compactOpenCodeReviewRows(rows) {
+  return new CompactUsageSnapshot(rows);
+}
+
+function visitUsageRows(rows, visit) {
+  if (rows instanceof CompactUsageSnapshot) return rows.visit(visit);
+  for (const row of rows) visit(row.sessionId, row.model, row.createdAt, row.input, row.output, row.cacheRead, row.cacheWrite);
+}
+
+function addUsageRow(groups, sessionId, model, input, output, cacheRead, cacheWrite) {
+  const key = JSON.stringify([sessionId, model]);
+  let entry = groups.get(key);
+  if (!entry) {
+    entry = { client: CLIENT, sessionId: `${CLIENT}:${sessionId}`, model,
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, messageCount: 0 };
+    groups.set(key, entry);
+  }
+  entry.input += input;
+  entry.output += output;
+  entry.cacheRead += cacheRead;
+  entry.cacheWrite += cacheWrite;
+  entry.messageCount += 1;
 }
 
 function buildOpenCodeReviewPeriods({ rows = [], now = new Date(), allTimeSince } = {}) {
@@ -310,19 +361,30 @@ function buildOpenCodeReviewPeriods({ rows = [], now = new Date(), allTimeSince 
   const month = new Date(at.getFullYear(), at.getMonth(), 1).getTime();
   const since = /^\d{4}-\d{2}-\d{2}$/.test(allTimeSince || '')
     ? new Date(`${allTimeSince}T00:00:00`).getTime() : Number(allTimeSince) || 0;
-  const build = (start) => periodJson(rows.filter((row) => row.createdAt >= start && row.createdAt <= at.getTime()));
-  return { today: build(today), month: build(month), allTime: build(since) };
+  const end = at.getTime();
+  const todayGroups = new Map();
+  const monthGroups = new Map();
+  const allTimeGroups = new Map();
+  visitUsageRows(rows, (sessionId, model, createdAt, input, output, cacheRead, cacheWrite) => {
+    if (createdAt <= end) {
+      if (createdAt >= today) addUsageRow(todayGroups, sessionId, model, input, output, cacheRead, cacheWrite);
+      if (createdAt >= month) addUsageRow(monthGroups, sessionId, model, input, output, cacheRead, cacheWrite);
+      if (createdAt >= since) addUsageRow(allTimeGroups, sessionId, model, input, output, cacheRead, cacheWrite);
+    }
+  });
+  return { today: { entries: [...todayGroups.values()] }, month: { entries: [...monthGroups.values()] },
+    allTime: { entries: [...allTimeGroups.values()] } };
 }
 
 function buildOpenCodeReviewHistoryGraph({ rows = [] } = {}) {
   const days = new Map();
-  for (const row of rows) {
-    const date = localDayKey(new Date(row.createdAt));
-    if (!days.has(date)) days.set(date, []);
-    days.get(date).push(row);
-  }
-  return { contributions: [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, dayRows]) => ({ date,
-    clients: periodJson(dayRows).entries.map((entry) => ({ client: CLIENT, modelId: entry.model,
+  visitUsageRows(rows, (sessionId, model, createdAt, input, output, cacheRead, cacheWrite) => {
+    const date = localDayKey(new Date(createdAt));
+    if (!days.has(date)) days.set(date, new Map());
+    addUsageRow(days.get(date), sessionId, model, input, output, cacheRead, cacheWrite);
+  });
+  return { contributions: [...days.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, groups]) => ({ date,
+    clients: [...groups.values()].map((entry) => ({ client: CLIENT, modelId: entry.model,
       tokens: { input: entry.input, output: entry.output, cacheRead: entry.cacheRead, cacheWrite: entry.cacheWrite },
       messages: entry.messageCount })) })) };
 }
@@ -335,5 +397,5 @@ function openCodeReviewHistoryRevision(rows, now) {
   return hash.digest('hex');
 }
 
-module.exports = { openCodeReviewSessionsDir, collectOpenCodeReviewRows, buildOpenCodeReviewPeriods,
+module.exports = { openCodeReviewSessionsDir, collectOpenCodeReviewRows, compactOpenCodeReviewRows, buildOpenCodeReviewPeriods,
   buildOpenCodeReviewHistoryGraph, openCodeReviewHistoryRevision };
