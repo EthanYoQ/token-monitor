@@ -26,6 +26,7 @@ const motionPreferenceApi = require('./motionPreference');
 const { clearBackgroundImage, getBackgroundImage, importBackgroundImage } = require('./backgroundImage');
 const { createClientSourceIpcHandlers } = require('./clientSourceIpc');
 const { createCodexAccountActivity } = require('./codexAccountActivity');
+const { createCodexCloudUsage } = require('./codexCloudUsage');
 const { presentUsage, isAccountActivityStale } = require('../shared/providers/codex/accountActivity');
 const { createMainWindowAutoHide } = require('./mainWindowAutoHide');
 const { isOtherAppFullscreen } = require('./windowsForegroundFullscreen');
@@ -2876,8 +2877,19 @@ const codexAccountActivity = createCodexAccountActivity({
   onConflict: () => console.warn('[codex-account-activity] newer account total is lower; retaining the verified snapshot')
 });
 
+const codexCloudUsage = createCodexCloudUsage({
+  onChange: () => {
+    if (latestStats) sendPush({ event: 'stats', data: { type: 'stats', reason: 'presentation', stats: latestStats, at: new Date().toISOString() } }, { skipExport: true });
+  },
+  onError: () => console.warn('[codex-cloud-usage] observation unavailable')
+});
+
 function configureCodexAccountActivity() {
   codexAccountActivity.configure({
+    enabled: settings?.codexAccountActivityEnabled === true,
+    selected: String(settings?.clients || '').split(',').includes('codex')
+  });
+  codexCloudUsage.configure({
     enabled: settings?.codexAccountActivityEnabled === true,
     selected: String(settings?.clients || '').split(',').includes('codex')
   });
@@ -2956,21 +2968,22 @@ function electronPresentationStats(stats) {
   const grouping = settings?.modelAliasGrouping;
   const accountPresentation = captureAccountUsagePresentation();
   const { account: snapshot, singleAccount: singleCodexAccount, nowMs, readState } = accountPresentation;
-  const selectedDate = snapshot ? localDayKey(new Date(nowMs)) : null;
+  const cloudUsage = settings?.codexAccountActivityEnabled === true && String(settings?.clients || '').split(',').includes('codex') ? codexCloudUsage.snapshot({ nowMs }) : null;
+  const selectedDate = snapshot || cloudUsage ? localDayKey(new Date(nowMs)) : null;
   const snapshotStale = snapshot ? isAccountActivityStale(snapshot, nowMs) : false;
   const localHistory = snapshot ? presentationHistoryForStats(stats) : null;
   const key = JSON.stringify([limitOptions, aliases ?? null, grouping ?? null, settings?.allTimeSince,
     settings?.codexAccountActivityEnabled, snapshot?.fetchedAt, snapshot?.lifetimeTokens,
     snapshot?.dailyCoverageComplete, snapshot?.dailyUsageBuckets?.[0]?.date, singleCodexAccount, snapshotStale,
-    selectedDate, selectedDate?.slice(0, 7), snapshot, readState, localHistory ? historyRevision(localHistory) : null]);
-  return presentationCache.get(stats, key, () => projectModelAliasStats(
+    selectedDate, selectedDate?.slice(0, 7), snapshot, readState, localHistory ? historyRevision(localHistory) : null, cloudUsage?.revision]);
+  return presentationCache.get(stats, key, () => ({ ...projectModelAliasStats(
     projectLimitStatsForDisplay(snapshot
       ? presentUsage({ localStats: stats, localHistory, ...accountPresentation }).stats
       : readState && readState.readStatus !== 'available'
         ? { ...stats, codexAccountActivity: { status: 'unavailable', ...readState } } : stats, limitOptions),
     aliases,
     { grouping }
-  ));
+  ), codexCloudUsage: cloudUsage }));
 }
 
 const allTimeSessionsCache = createStatsPresentationCache();
@@ -7435,7 +7448,8 @@ app.whenReady().then(() => {
     }
     const [stats] = await Promise.all([
       fetchStats(options),
-      options?.force === true || options?.forceHistory === true ? codexAccountActivity.refresh({ force: true }) : null
+      options?.force === true || options?.forceHistory === true ? codexAccountActivity.refresh({ force: true }) : null,
+      options?.forceHistory === true ? codexCloudUsage.refresh() : null
     ]);
     // The stream normally carries the stamp, but it is precisely when the stream
     // is down that this read is the only thing still arriving from the hub.
@@ -8559,6 +8573,7 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('before-quit', () => {
   quitRequested = true;
   codexAccountActivity.dispose();
+  codexCloudUsage.dispose();
   antigravityOAuthLoginController?.abort();
   resetMacWidgetReloadThrottle();
   if (rateRefreshTimer) clearInterval(rateRefreshTimer);

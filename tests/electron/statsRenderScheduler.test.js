@@ -97,6 +97,7 @@ test('a hidden floating-bubble state update changes state without touching DOM',
         }
       },
       isRendererWindowHidden: () => true,
+      allTimeSessions: { reconcile: (stats) => stats },
       state,
       statsRenderScheduler: { request() { scheduledRenders += 1; } }
     }
@@ -165,7 +166,7 @@ test('renderer wires visibility scheduling without deferring tray icon updates',
   assert.match(app, /onWindowVisibilityPush\?\.\(\(visible\) => \{/);
   assert.match(
     statsPush,
-    /state\.stats = allTimeSessions\.attach\(payload\.data\.stats\);[\s\S]*statsRenderScheduler\.request\(\);[\s\S]*maybeUpdateBarsIcon\(\);/
+    /state\.stats = allTimeSessions\.reconcile\(payload\.data\.stats\);[\s\S]*statsRenderScheduler\.request\(\);[\s\S]*maybeUpdateBarsIcon\(\);/
   );
 });
 
@@ -295,6 +296,7 @@ test('a stats update repaints main and the visible Settings overlay', () => {
   ];
   const context = {
     visibleStatsSurface: () => 'main',
+    allTimeSessions: { reconcile: (stats) => stats },
     renderConnectionStatus: (surface) => calls.push(`connection:${surface}`),
     render: () => calls.push('main'),
     state: { settings: { limitAccountForms: [{ id: 'typesafe' }] } },
@@ -422,6 +424,7 @@ test('a direct main render defers only while the window is hidden', () => {
   const render = rendererFunction('render', '\nfunction setStatus(', {
     visibleStatsSurface: () => surface,
     statsRenderScheduler: { request() { scheduled += 1; } },
+    allTimeSessions: { reconcile: (stats) => stats },
     state: { stats: null }
   });
 

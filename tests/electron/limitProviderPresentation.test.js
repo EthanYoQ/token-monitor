@@ -5140,10 +5140,12 @@ test('a stats frame stamped with a newer subscription version is read back, once
   const adopted = [];
   let handler;
   let accountReads = 0;
+  let cloudReads = 0;
   vm.runInNewContext(statsHandlerSource, {
     ipcMain: { handle: (name, callback) => { if (name === 'stats:get') handler = callback; } },
     fetchStats: async () => stats,
     codexAccountActivity: { refresh: async () => { accountReads += 1; } },
+    codexCloudUsage: { refresh: async () => { cloudReads += 1; } },
     maybeAdoptSharedSubscriptionRevision: (value) => adopted.push(value),
     electronPresentationStats: (value) => value,
     rendererStats: (value) => value,
@@ -5151,8 +5153,10 @@ test('a stats frame stamped with a newer subscription version is read back, once
   });
   assert.equal(await handler({}, {}), stats);
   assert.equal(accountReads, 0);
+  assert.equal(cloudReads, 0);
   assert.equal(await handler({}, { forceHistory: true }), stats);
   assert.equal(accountReads, 1);
+  assert.equal(cloudReads, 1);
   assert.deepEqual(adopted, [stats, stats]);
   // And there is no periodic subscription read left behind it. One existed while
   // the stamp did not; keeping it would spend a request every five minutes per

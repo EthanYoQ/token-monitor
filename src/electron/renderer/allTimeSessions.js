@@ -3,7 +3,7 @@
 // The all-time session list is pulled rather than pushed: main composes it only
 // when asked, for the snapshot the renderer names, and every stats push arrives
 // without it. The last list pulled stays attached to newer stats from the same
-// source until a fresh one lands, so the TOTAL session and project lists never
+// source while the view stays open, so the TOTAL session and project lists never
 // drop back to the model list between a push and its pull.
 (function exposeAllTimeSessions(root, factory) {
   const api = factory();
@@ -20,11 +20,18 @@
     return Boolean(a && b) && a.source === b.source;
   }
 
+  function withoutAllTimeSessions(stats) {
+    const allTime = stats?.periods?.allTime;
+    if (!allTime || !Object.hasOwn(allTime, 'sessions')) return stats;
+    const { sessions: _sessions, ...summary } = allTime;
+    return { ...stats, periods: { ...stats.periods, allTime: summary } };
+  }
+
   // One pull at a time, always for the snapshot the renderer holds when it
   // starts (`currentSnapshot()`, main's `{ id, source }` stamp). Stats that
   // arrive during a pull mark the list stale, and the pull that follows reads
-  // them; stats that arrive while nothing shows the list only mark it, so a
-  // hidden view costs main nothing. A list never crosses a source change: it is
+  // them. Leaving the view releases its list and invalidates pending replies.
+  // A list never crosses a source change: it is
   // neither attached to stats from another Hub or mode, nor kept when it lands
   // after a switch. A failed pull waits for the next stats instead of retrying
   // in a loop.
@@ -36,10 +43,19 @@
     let pulled = null;
     let stale = true;
     let pending = false;
+    let activeSnapshot = null;
+    let generation = 0;
 
     function attach(stats) {
-      if (!pulled || !sameSource(pulled.snapshot, stats?.snapshot)) return stats;
+      if (!pulled || !sameSource(pulled.snapshot, stats?.snapshot)) return withoutAllTimeSessions(stats);
       return withAllTimeSessions(stats, pulled.sessions);
+    }
+
+    function release() {
+      if (activeSnapshot) generation += 1;
+      activeSnapshot = null;
+      pulled = null;
+      stale = true;
     }
 
     function invalidate() {
@@ -50,16 +66,22 @@
       return Boolean(pulled) && sameSource(pulled.snapshot, currentSnapshot());
     }
 
-    function ensure() {
-      if (pending || !stale || !needed()) return;
-      const snapshot = currentSnapshot();
-      if (!snapshot) return;
+    function ensure(snapshot = currentSnapshot()) {
+      if (!needed()) {
+        release();
+        return;
+      }
+      if (activeSnapshot && !sameSource(activeSnapshot, snapshot)) release();
+      activeSnapshot = snapshot;
+      if (pending || !stale || !snapshot) return;
+      const requestGeneration = generation;
       stale = false;
       pending = true;
       Promise.resolve()
         .then(() => fetchSessions(snapshot.id))
         .then((sessions) => {
           if (!sessions || typeof sessions !== 'object') return;
+          if (requestGeneration !== generation || !needed()) return;
           if (!sameSource(snapshot, currentSnapshot())) return;
           pulled = { snapshot, sessions };
           onLoaded();
@@ -72,7 +94,12 @@
         });
     }
 
-    return { attach, ensure, invalidate, loaded };
+    function reconcile(stats) {
+      ensure(stats?.snapshot);
+      return attach(stats);
+    }
+
+    return { attach, ensure, invalidate, loaded, reconcile };
   }
 
   return {
