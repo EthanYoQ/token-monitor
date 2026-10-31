@@ -432,6 +432,7 @@ Object.assign(els, {
   sessionUsageArchiveInput: document.getElementById('sessionUsageArchiveInput'),
   codexAccountActivityInput: document.getElementById('codexAccountActivityInput'),
   codexAccountActivityNote: document.getElementById('codexAccountActivityNote'),
+  codexCloudUsageNote: document.getElementById('codexCloudUsageNote'),
   sessionUsageArchiveStatus: document.getElementById('sessionUsageArchiveStatus'),
   reduceMotionInputs: Array.from(document.querySelectorAll('input[name="reduceMotionOption"]')),
   windowsBackdropRow: document.getElementById('windowsBackdropRow'),
@@ -6279,14 +6280,50 @@ function renderHome() {
   // ResizeObserver repeats the scroll + hover restoration once layout fully settles.
 }
 
+function renderCodexCloudUsage() {
+  const host = els.codexCloudUsageNote;
+  if (!host) return;
+  const cloud = ['today', 'month', 'allTime'].includes(state.period) ? state.stats?.codexCloudUsage : null;
+  host.classList.toggle('hidden', !cloud);
+  host.replaceChildren();
+  if (!cloud) return;
+  const header = document.createElement('div');
+  header.textContent = t('usage.codexCloud.heading', {
+    status: t(`usage.codexCloud.${cloud.connected ? 'connected' : 'disconnected'}`)
+  });
+  const coverage = document.createElement('div');
+  coverage.textContent = t('usage.codexCloud.coverage');
+  host.append(header, coverage);
+  const threads = cloud.threads || [];
+  if (!threads.length) {
+    const waiting = document.createElement('div');
+    waiting.textContent = t('usage.codexCloud.waiting');
+    host.append(waiting);
+  }
+  for (const thread of threads) {
+    const row = document.createElement('div');
+    const tokens = thread.periods?.[state.period]?.tokens;
+    const observed = tokens == null ? '—' : formatNumber(tokens);
+    const reported = thread.reportedTotalTokens == null ? '—' : formatNumber(thread.reportedTotalTokens);
+    row.textContent = `${String(thread.threadId).slice(-8)} · ${t(`usage.codexCloud.${state.period}`, { value: observed })} · ${t('usage.codexCloud.reported', { value: reported })}`;
+    const notes = [thread.threadId];
+    if (thread.observedSince) notes.push(t('usage.codexCloud.since', {
+      date: new Date(thread.observedSince).toLocaleString(currentLocale())
+    }));
+    if (thread.undatedTokens > 0) notes.push(t('usage.codexCloud.undated', { value: formatNumber(thread.undatedTokens) }));
+    row.title = notes.join('\n');
+    host.append(row);
+  }
+}
+
 function render() {
+  state.stats = allTimeSessions.reconcile(state.stats);
   const surface = visibleStatsSurface();
   if (surface !== 'main') {
     if (!surface) statsRenderScheduler.request();
     return;
   }
   if (!state.stats) return;
-  allTimeSessions.ensure();
   els.toolDetailFooter.classList.add('hidden');
   syncLiveTokenRateFooterState();
   renderSessionUsageArchiveStatus();
@@ -6346,6 +6383,7 @@ function render() {
     }));
     els.codexAccountActivityNote.textContent = notes.join(' ');
   }
+  renderCodexCloudUsage();
   const detailUnavailable = derivedPeriod
     && !fixedPeriodRangesApi.supportsBreakdown(state.period, state.breakdown, {
       deviceHistoriesAvailable: Array.isArray(state.fixedPeriodHistory?.deviceHistories)
@@ -6583,7 +6621,7 @@ async function refreshStats(options = {}) {
     const nextStats = await window.tokenMonitor.getStats(options);
     observeLiveTokenRate(nextStats);
     allTimeSessions.invalidate();
-    state.stats = allTimeSessions.attach(nextStats);
+    state.stats = allTimeSessions.reconcile(nextStats);
     observeDisplayLiveTokenRates(nextStats);
     if (options.forceHistory === true) {
       // A manual history rescan is an explicit retry boundary. Let Home request the
@@ -7278,6 +7316,7 @@ function applyFloatingBubbleState(payload = {}, options = {}) {
   const wasCollapsed = state.floatingBubble.collapsed;
   const side = payload?.collapsed && ['left', 'right'].includes(payload.side) ? payload.side : null;
   state.floatingBubble = { collapsed: Boolean(side), side };
+  state.stats = allTimeSessions.reconcile(state.stats);
   if (isRendererWindowHidden()) {
     statsRenderScheduler.request();
     return;
@@ -8018,6 +8057,7 @@ function syncHideAppIconControl(showTrayIcon, trayMode) {
 }
 
 function syncSettingsForm() {
+  state.stats = allTimeSessions.reconcile(state.stats);
   if (isRendererWindowHidden()) {
     applyInitialBreakdownPreference();
     applyVendorColorOverrides(state.settings.vendorColors);
@@ -8082,7 +8122,6 @@ function syncSettingsForm() {
   if (els.sessionUsageArchiveInput) els.sessionUsageArchiveInput.checked = state.settings.sessionUsageArchiveEnabled !== false;
   if (els.codexAccountActivityInput) els.codexAccountActivityInput.checked = state.settings.codexAccountActivityEnabled === true;
   renderAutomaticAppUpdateControl();
-  allTimeSessions.ensure();
   renderSessionUsageArchiveStatus();
   const exportAutoOn = Boolean(state.settings.exportAutoEnabled);
   const exportDir = state.settings.exportDir || '';
@@ -11240,6 +11279,7 @@ els.settingsButton.addEventListener('click', (event) => {
   } else {
     resetSettingsListSearch();
     stopWindowShortcutRecording();
+    state.stats = allTimeSessions.reconcile(state.stats);
   }
   els.shell.classList.toggle('settings-open', settingsOpen);
   if (!settingsOpen && event.detail > 0) els.settingsButton.blur();
@@ -12013,6 +12053,7 @@ function renderConnectionStatus(surface = visibleStatsSurface()) {
 }
 
 function renderStatsUpdate() {
+  state.stats = allTimeSessions.reconcile(state.stats);
   const surface = visibleStatsSurface();
   renderConnectionStatus(surface);
   if (surface === 'bubble') {
@@ -12043,10 +12084,10 @@ const statsRenderScheduler = statsRenderSchedulerApi.createStatsRenderScheduler(
   isHidden: isRendererWindowHidden,
   render: renderStatsUpdate
 });
-// Pulled once up front, then only while something on screen reads it: the
-// archived count in Settings, or the TOTAL session and project lists.
+// Settings reads the archived count; TOTAL session and project views read rows.
 function allTimeSessionsNeeded() {
-  if (!allTimeSessions.loaded() || isSettingsPanelOpen()) return true;
+  if (visibleStatsSurface() !== 'main') return false;
+  if (isSettingsPanelOpen()) return true;
   return state.period === 'allTime' && (state.breakdown === 'session' || state.breakdown === 'project');
 }
 const allTimeSessions = allTimeSessionsApi.createAllTimeSessionsLoader({
@@ -12054,12 +12095,13 @@ const allTimeSessions = allTimeSessionsApi.createAllTimeSessionsLoader({
   currentSnapshot: () => state.stats?.snapshot,
   needed: allTimeSessionsNeeded,
   onLoaded: () => {
-    if (state.stats) state.stats = allTimeSessions.attach(state.stats);
+    if (state.stats) state.stats = allTimeSessions.reconcile(state.stats);
     statsRenderScheduler.request();
   },
   onError: (error) => console.log(`[stats] all-time sessions failed: ${error?.message || error}`)
 });
 function handleWindowVisibilityChange() {
+  state.stats = allTimeSessions.reconcile(state.stats);
   if (!statsRenderScheduler.visibilityChanged()) return;
   if (isRendererWindowHidden()) cancelTokenRateBoost();
   else applyFloatingBubbleState(state.floatingBubble, { renderContent: false });
@@ -12100,7 +12142,7 @@ window.tokenMonitor.onStatsPush?.((payload) => {
     }
     if (payload.data?.mode) state.mode = payload.data.mode;
     allTimeSessions.invalidate();
-    state.stats = allTimeSessions.attach(payload.data.stats);
+    state.stats = allTimeSessions.reconcile(payload.data.stats);
     observeLiveTokenRate(state.stats);
     observeDisplayLiveTokenRates(state.stats);
     applyCodexActiveAccountFromStats();

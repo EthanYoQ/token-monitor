@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
-const { collectOpenCodeReviewRows, buildOpenCodeReviewPeriods, buildOpenCodeReviewHistoryGraph } = require('../../src/shared/providers/open-code-review/usage');
+const { collectOpenCodeReviewRows, buildOpenCodeReviewPeriods, buildOpenCodeReviewHistoryGraph,
+  openCodeReviewHistoryRevision } = require('../../src/shared/providers/open-code-review/usage');
 const { extractUsageFromTokscale } = require('../../src/shared/usage');
 
 function fixture(t) {
@@ -155,6 +156,7 @@ test('OCR detects a middle rewrite followed by append and reconciles historical 
     }
   };
   await collectUsageOnce(options);
+  assert.equal(captured.openCodeReviewHistoryRevision, openCodeReviewHistoryRevision(await collectOpenCodeReviewRows(f), now));
   const anchor = { dateKey: localTodayKey(now), ...captured.windowsPeriods, todayPartitions: captured.todayPartitions,
     openCodeReviewHistoryRevision: captured.openCodeReviewHistoryRevision };
   const rewritten = original.replace('"prompt_tokens":100', '"prompt_tokens":900');
@@ -508,6 +510,50 @@ test('collector OCR fallback stays within its runtime while archives retain earl
   fs.writeFileSync(f.file, '');
   assert.equal(await runtime.tick('manual', { forceHistory: true }), true);
   assert.equal(updates.at(-1).allTime.totalTokens, 10, 'a successful empty source replaces cached usage');
+});
+
+test('collector OCR snapshot reprojects across month rollover and survives partial failed or cancelled reads', async (t) => {
+  const f = fixture(t);
+  const { collectUsageOnce } = require('../../src/shared/collector');
+  const previous = new Date(2026, 9, 31, 10).toISOString();
+  const current = new Date(2026, 10, 1, 10).toISOString();
+  const good = line(event('old', previous)) + line(event('future', current));
+  fs.writeFileSync(f.file, good);
+  const options = {
+    homeDir: f.homeDir, openCodeReviewCacheDir: f.cacheDir, openCodeReviewState: {},
+    clients: 'claude,open-code-review', allTimeSince: '2026-01-01', deviceId: 'ocr-snapshot-test',
+    platform: 'linux', env: {}, wslScanEnabled: false, includeHistory: true,
+    dailyHistoryArchiveEnabled: false,
+    runTokscale: async () => ({ entries: [] }), runGraph: async () => ({ contributions: [] })
+  };
+  const totals = (summary) => ['today', 'month', 'allTime'].map((period) => summary[period].totalTokens);
+  assert.deepEqual(totals(await collectUsageOnce({ ...options, now: new Date(2026, 9, 31, 12) })), [120, 120, 120]);
+  fs.appendFileSync(f.file, line(event('new', current)));
+  const badFile = path.join(path.dirname(f.file), 'z.jsonl');
+  fs.writeFileSync(badFile, '{bad json}\n');
+  const rolledOptions = { ...options, now: new Date(2026, 10, 1, 12) };
+  const fallback = await collectUsageOnce(rolledOptions);
+  assert.deepEqual(totals(fallback), [120, 120, 240]);
+  assert.equal(fallback.clientHealth.clients['open-code-review'].collection.state, 'failed');
+
+  const originalOpen = fs.promises.open;
+  const controller = new AbortController();
+  const reason = new Error('cancel after first file');
+  try {
+    fs.promises.open = async (filePath, ...args) => {
+      if (filePath === badFile) { controller.abort(reason); throw reason; }
+      return originalOpen(filePath, ...args);
+    };
+    await assert.rejects(collectUsageOnce({ ...rolledOptions, signal: controller.signal }), (error) => error === reason);
+  } finally { fs.promises.open = originalOpen; }
+  assert.deepEqual(totals(await collectUsageOnce(rolledOptions)), [120, 120, 240]);
+  fs.rmSync(badFile);
+  const recovered = await collectUsageOnce(rolledOptions);
+  assert.deepEqual(totals(recovered), [240, 240, 360]);
+  assert.equal(recovered.clientHealth.clients['open-code-review'].collection.state, 'direct');
+  fs.appendFileSync(f.file, '{bad json}\n');
+  assert.deepEqual(totals(await collectUsageOnce({ ...rolledOptions, allTimeSince: new Date(2026, 10, 1).getTime() })),
+    [240, 240, 240], 'fallback must apply the current numeric all-time boundary');
 });
 
 test('collector propagates OCR abort errors and aborted signals with ordinary error reasons', async (t) => {

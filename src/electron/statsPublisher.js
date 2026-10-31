@@ -123,7 +123,7 @@ function rendererStats(stats) {
 function createRendererSnapshots(options = {}) {
   const source = options.source;
   if (typeof source !== 'function') throw new TypeError('source must be a function');
-  const limit = Math.max(1, Number(options.limit) || 8);
+  const limit = Math.max(1, Number(options.limit) || 2);
   const tags = new WeakMap();
   const byId = new Map();
   let nextId = 1;

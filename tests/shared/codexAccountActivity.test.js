@@ -375,6 +375,7 @@ test('Home selects local date names without shifting official buckets and invali
     const project = vm.runInNewContext(`${capture || ''}\n(${body})`, {
       settings: { clients: 'codex,claude', codexAccountActivityEnabled: true, allTimeSince: '2024-01-01' },
       codexAccountActivity: { snapshot: () => snapshot, multipleAccounts: () => false, readState: () => null },
+      codexCloudUsage: { snapshot: () => null },
       syncProvenanceActive: () => false,
       localDayKey,
       isAccountActivityStale: () => false,

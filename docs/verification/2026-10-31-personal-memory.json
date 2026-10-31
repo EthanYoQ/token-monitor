@@ -1,0 +1,388 @@
+{
+  "units": "MiB",
+  "scope": "Four resident Electron processes; private bytes, workers counted within browser process",
+  "normalMode": {
+    "complete": true,
+    "runs": [
+      {
+        "side": "before",
+        "index": 0,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108278.1454,
+        "refreshPeakMiB": 1086.55078125,
+        "refreshMeanMiB": 969.2565825377311,
+        "settledPrivateMiB": 665.767578125,
+        "settledWorkingSetMiB": 715.064453125,
+        "settledMainPrivateMiB": 413.921875,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 0,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108019.6706,
+        "refreshPeakMiB": 967.15234375,
+        "refreshMeanMiB": 902.7227012382033,
+        "settledPrivateMiB": 687.693359375,
+        "settledWorkingSetMiB": 737.97265625,
+        "settledMainPrivateMiB": 434.591796875,
+        "steadySamples": 20
+      },
+      {
+        "side": "before",
+        "index": 1,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108678.7576,
+        "refreshPeakMiB": 1055.546875,
+        "refreshMeanMiB": 964.7511735677263,
+        "settledPrivateMiB": 627.51953125,
+        "settledWorkingSetMiB": 679.65625,
+        "settledMainPrivateMiB": 369.96875,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 1,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 110016.1962,
+        "refreshPeakMiB": 987.07421875,
+        "refreshMeanMiB": 900.1319644958548,
+        "settledPrivateMiB": 588.96484375,
+        "settledWorkingSetMiB": 668.390625,
+        "settledMainPrivateMiB": 326.375,
+        "steadySamples": 20
+      },
+      {
+        "side": "before",
+        "index": 2,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 107900.8254,
+        "refreshPeakMiB": 1106.96484375,
+        "refreshMeanMiB": 958.5211199331155,
+        "settledPrivateMiB": 590.5390625,
+        "settledWorkingSetMiB": 649.859375,
+        "settledMainPrivateMiB": 362.189453125,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 2,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108418.3882,
+        "refreshPeakMiB": 1030.6796875,
+        "refreshMeanMiB": 921.035042166112,
+        "settledPrivateMiB": 735.05859375,
+        "settledWorkingSetMiB": 803.05859375,
+        "settledMainPrivateMiB": 474.876953125,
+        "steadySamples": 20
+      },
+      {
+        "side": "before",
+        "index": 3,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 109406.3614,
+        "refreshPeakMiB": 1112.8203125,
+        "refreshMeanMiB": 1004.4321548152551,
+        "settledPrivateMiB": 824.689453125,
+        "settledWorkingSetMiB": 880.205078125,
+        "settledMainPrivateMiB": 520.451171875,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 3,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 107142.51610000001,
+        "refreshPeakMiB": 1036.2734375,
+        "refreshMeanMiB": 933.9666591080154,
+        "settledPrivateMiB": 748.77734375,
+        "settledWorkingSetMiB": 807.984375,
+        "settledMainPrivateMiB": 474.765625,
+        "steadySamples": 20
+      },
+      {
+        "side": "before",
+        "index": 4,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108136.1271,
+        "refreshPeakMiB": 1039.59765625,
+        "refreshMeanMiB": 967.7689134221908,
+        "settledPrivateMiB": 592.197265625,
+        "settledWorkingSetMiB": 652.880859375,
+        "settledMainPrivateMiB": 359.861328125,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 4,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108347.2013,
+        "refreshPeakMiB": 998.28125,
+        "refreshMeanMiB": 906.9847203120981,
+        "settledPrivateMiB": 616.1875,
+        "settledWorkingSetMiB": 688.21484375,
+        "settledMainPrivateMiB": 345.4375,
+        "steadySamples": 20
+      }
+    ],
+    "metrics": {
+      "refreshPeakMiB": {
+        "before": {
+          "median": 1086.55078125,
+          "min": 1039.59765625,
+          "max": 1112.8203125
+        },
+        "after": {
+          "median": 998.28125,
+          "min": 967.15234375,
+          "max": 1036.2734375
+        },
+        "delta": -88.26953125,
+        "reductionPercent": 8.123829348173873
+      },
+      "refreshMeanMiB": {
+        "before": {
+          "median": 967.7689134221908,
+          "min": 958.5211199331155,
+          "max": 1004.4321548152551
+        },
+        "after": {
+          "median": 906.9847203120981,
+          "min": 900.1319644958548,
+          "max": 933.9666591080154
+        },
+        "delta": -60.7841931100927,
+        "reductionPercent": 6.280858195284422
+      },
+      "settledPrivateMiB": {
+        "before": {
+          "median": 627.51953125,
+          "min": 590.5390625,
+          "max": 824.689453125
+        },
+        "after": {
+          "median": 687.693359375,
+          "min": 588.96484375,
+          "max": 748.77734375
+        },
+        "delta": 60.173828125,
+        "reductionPercent": -9.589156214012263
+      },
+      "settledWorkingSetMiB": {
+        "before": {
+          "median": 679.65625,
+          "min": 649.859375,
+          "max": 880.205078125
+        },
+        "after": {
+          "median": 737.97265625,
+          "min": 668.390625,
+          "max": 807.984375
+        },
+        "delta": 58.31640625,
+        "reductionPercent": -8.580279553082892
+      },
+      "settledMainPrivateMiB": {
+        "before": {
+          "median": 369.96875,
+          "min": 359.861328125,
+          "max": 520.451171875
+        },
+        "after": {
+          "median": 434.591796875,
+          "min": 326.375,
+          "max": 474.876953125
+        },
+        "delta": 64.623046875,
+        "reductionPercent": -17.46716361179155
+      }
+    }
+  },
+  "controlledPostRescan": {
+    "complete": true,
+    "runs": [
+      {
+        "side": "before",
+        "index": 0,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 108058.9977,
+        "refreshPeakMiB": 981.11328125,
+        "refreshMeanMiB": 909.9603005057544,
+        "settledPrivateMiB": 576.81640625,
+        "settledWorkingSetMiB": 642.548828125,
+        "settledMainPrivateMiB": 351.546875,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 0,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 107585.892,
+        "refreshPeakMiB": 1010.484375,
+        "refreshMeanMiB": 905.3456686757827,
+        "settledPrivateMiB": 567.33984375,
+        "settledWorkingSetMiB": 643.203125,
+        "settledMainPrivateMiB": 332.849609375,
+        "steadySamples": 20
+      },
+      {
+        "side": "before",
+        "index": 1,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 114544.8168,
+        "refreshPeakMiB": 1003.16015625,
+        "refreshMeanMiB": 910.0334608238451,
+        "settledPrivateMiB": 594.17578125,
+        "settledWorkingSetMiB": 654.46484375,
+        "settledMainPrivateMiB": 361.93359375,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 1,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 107622.25050000001,
+        "refreshPeakMiB": 1011.90234375,
+        "refreshMeanMiB": 905.440422508481,
+        "settledPrivateMiB": 563.787109375,
+        "settledWorkingSetMiB": 640.982421875,
+        "settledMainPrivateMiB": 324.212890625,
+        "steadySamples": 20
+      },
+      {
+        "side": "before",
+        "index": 2,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 106810.2102,
+        "refreshPeakMiB": 1043.3125,
+        "refreshMeanMiB": 942.8256914369531,
+        "settledPrivateMiB": 587.4453125,
+        "settledWorkingSetMiB": 648.0859375,
+        "settledMainPrivateMiB": 359.82421875,
+        "steadySamples": 20
+      },
+      {
+        "side": "after",
+        "index": 2,
+        "errors": 0,
+        "rescans": 8,
+        "ocrReads": 9,
+        "elapsedMs": 106763.2154,
+        "refreshPeakMiB": 996.828125,
+        "refreshMeanMiB": 909.6832444115979,
+        "settledPrivateMiB": 575.1796875,
+        "settledWorkingSetMiB": 629.08984375,
+        "settledMainPrivateMiB": 344.453125,
+        "steadySamples": 20
+      }
+    ],
+    "metrics": {
+      "refreshPeakMiB": {
+        "before": {
+          "median": 1003.16015625,
+          "min": 981.11328125,
+          "max": 1043.3125
+        },
+        "after": {
+          "median": 1010.484375,
+          "min": 996.828125,
+          "max": 1011.90234375
+        },
+        "delta": 7.32421875,
+        "reductionPercent": -0.7301145987874236
+      },
+      "refreshMeanMiB": {
+        "before": {
+          "median": 910.0334608238451,
+          "min": 909.9603005057544,
+          "max": 942.8256914369531
+        },
+        "after": {
+          "median": 905.440422508481,
+          "min": 905.3456686757827,
+          "max": 909.6832444115979
+        },
+        "delta": -4.593038315364083,
+        "reductionPercent": 0.5047109269153749
+      },
+      "settledPrivateMiB": {
+        "before": {
+          "median": 587.4453125,
+          "min": 576.81640625,
+          "max": 594.17578125
+        },
+        "after": {
+          "median": 567.33984375,
+          "min": 563.787109375,
+          "max": 575.1796875
+        },
+        "delta": -20.10546875,
+        "reductionPercent": 3.4225260330083884
+      },
+      "settledWorkingSetMiB": {
+        "before": {
+          "median": 648.0859375,
+          "min": 642.548828125,
+          "max": 654.46484375
+        },
+        "after": {
+          "median": 640.982421875,
+          "min": 629.08984375,
+          "max": 643.203125
+        },
+        "delta": -7.103515625,
+        "reductionPercent": 1.0960761858839096
+      },
+      "settledMainPrivateMiB": {
+        "before": {
+          "median": 359.82421875,
+          "min": 351.546875,
+          "max": 361.93359375
+        },
+        "after": {
+          "median": 332.849609375,
+          "min": 324.212890625,
+          "max": 344.453125
+        },
+        "delta": -26.974609375,
+        "reductionPercent": 7.4966075014927025
+      }
+    }
+  },
+  "installed": {
+    "at": "2026-10-31T09:29:40.995Z",
+    "version": "0.63.1-personal.17",
+    "sha256": "b7ff88ff9466587567a67fb80d1cef8f69042e3e4dcf97e6c55c903b5ab472ec",
+    "verifiedSourceFiles": 355
+  }
+}

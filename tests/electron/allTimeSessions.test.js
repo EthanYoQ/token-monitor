@@ -4,11 +4,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const {
   createAllTimeSessionsLoader,
   withAllTimeSessions
 } = require('../../src/electron/renderer/allTimeSessions');
+const { createRendererSnapshots } = require('../../src/electron/statsPublisher');
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -17,12 +19,15 @@ function harness(options = {}) {
   const loaded = [];
   const errors = [];
   let needed = options.needed ?? true;
-  let current = { id: 1, source: 0 };
+  const state = { stats: stats() };
   const loader = createAllTimeSessionsLoader({
     fetchSessions: (id) => new Promise((resolve, reject) => calls.push({ id, resolve, reject })),
-    currentSnapshot: () => current,
+    currentSnapshot: () => state.stats?.snapshot,
     needed: () => needed,
-    onLoaded: () => loaded.push(loader.attach(stats(current))),
+    onLoaded: () => {
+      state.stats = loader.reconcile(state.stats);
+      loaded.push(state.stats);
+    },
     onError: (error) => errors.push(error)
   });
   return {
@@ -30,9 +35,13 @@ function harness(options = {}) {
     calls,
     loaded,
     errors,
+    state,
+    reconcile: () => { state.stats = loader.reconcile(state.stats); },
     setNeeded: (value) => { needed = value; },
-    // A new snapshot is adopted: the renderer's stats change, then invalidate.
-    adopt: (snapshot) => { current = snapshot; loader.invalidate(); }
+    adopt: (snapshot) => {
+      loader.invalidate();
+      state.stats = loader.reconcile(stats(snapshot));
+    }
   };
 }
 
@@ -186,7 +195,213 @@ test('a failed or empty pull waits for the next stats instead of retrying', asyn
   assert.equal(loader.loaded(), false);
 });
 
-test('the renderer attaches the pulled list to every stats it adopts and pulls from render', () => {
+test('leaving a consumer releases both the cached list and the attached stats without mutating the snapshot', async () => {
+  const { loader, calls, state, reconcile, setNeeded } = harness();
+  reconcile();
+  await settle();
+  calls[0].resolve({ archived: { totalTokens: 9 } });
+  await settle();
+  const displayed = state.stats;
+  assert.ok(displayed.periods.allTime.sessions.archived);
+
+  setNeeded(false);
+  reconcile();
+  assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+  assert.equal(loader.loaded(), false);
+  assert.equal(Object.hasOwn(loader.attach(stats()).periods.allTime, 'sessions'), false);
+  assert.ok(displayed.periods.allTime.sessions.archived, 'published stats remain immutable');
+  assert.equal(state.stats.periods.today, displayed.periods.today);
+  assert.equal(state.stats.limits, displayed.limits);
+  const released = state.stats;
+  reconcile();
+  assert.equal(state.stats, released, 'repeated release needs no new copy');
+
+  setNeeded(true);
+  reconcile();
+  await settle();
+  assert.deepEqual(calls.map((call) => call.id), [1, 1], 'reopening reloads without a stats push');
+});
+
+test('a late result cannot restore detail after its consumer leaves', async () => {
+  const { calls, state, loaded, reconcile, setNeeded } = harness();
+  reconcile();
+  await settle();
+  setNeeded(false);
+  reconcile();
+  calls[0].resolve({ late: {} });
+  await settle();
+  assert.equal(loaded.length, 0);
+  assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+  assert.equal(calls.length, 1);
+});
+
+test('leave and reenter during a pull discard the old reply and start one replacement after settlement', async () => {
+  const { calls, state, loaded, reconcile, setNeeded } = harness();
+  reconcile();
+  await settle();
+  setNeeded(false);
+  reconcile();
+  setNeeded(true);
+  reconcile();
+  reconcile();
+  await settle();
+  assert.equal(calls.length, 1, 'the old request still owns the pending slot');
+  calls[0].resolve({ previousVisit: {} });
+  await settle();
+  assert.equal(loaded.length, 0);
+  assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+  assert.deepEqual(calls.map((call) => call.id), [1, 1]);
+  calls[1].resolve({ currentVisit: {} });
+  await settle();
+  assert.deepEqual(Object.keys(state.stats.periods.allTime.sessions), ['currentVisit']);
+  assert.equal(calls.length, 2);
+});
+
+test('new same-source stats keep displayed detail while a source switch releases it even if loading fails', async () => {
+  const { loader, calls, state, reconcile, adopt, loaded } = harness();
+  reconcile();
+  await settle();
+  calls[0].resolve({ original: {} });
+  await settle();
+  const sessions = state.stats.periods.allTime.sessions;
+  adopt({ id: 2, source: 0 });
+  assert.equal(state.stats.periods.allTime.sessions, sessions, 'same-source continuity');
+  await settle();
+  assert.equal(calls[1].id, 2, 'adoption fetches the new stamp, not the previous state.stats');
+  adopt({ id: 3, source: 1 });
+  assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+  assert.equal(Object.hasOwn(loader.attach(stats()).periods.allTime, 'sessions'), false, 'old cache was released');
+  calls[1].resolve({ lateOldSource: {} });
+  await settle();
+  assert.equal(loaded.length, 1);
+  assert.equal(calls[2].id, 3);
+  calls[2].reject(new Error('new source unavailable'));
+  await settle();
+  assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+  assert.equal(calls.length, 3, 'failure does not retry the same stamp');
+});
+
+for (const newerArrivesFirst of [true, false]) {
+  test(`an evicted detail request recovers when newer stats arrive ${newerArrivesFirst ? 'before' : 'after'} its null result`, async () => {
+    const snapshots = createRendererSnapshots({ source: () => 0 });
+    const first = snapshots.stamp({ periods: { allTime: { sessions: { old: {} } } } }, {});
+    const { loader, calls, state, loaded, adopt, reconcile } = harness();
+    reconcile();
+    await settle();
+    snapshots.stamp({ periods: {} }, {});
+    const newest = snapshots.stamp({ periods: { allTime: { sessions: { newest: {} } } } }, {});
+    assert.equal(snapshots.get(first.snapshot.id), null);
+    if (newerArrivesFirst) adopt(newest.snapshot);
+    calls[0].resolve(snapshots.get(first.snapshot.id));
+    await settle();
+    assert.equal(loaded.length, 0, 'an old id never resolves to latest detail');
+    if (!newerArrivesFirst) {
+      reconcile();
+      await settle();
+      assert.equal(calls.length, 1, 'an unavailable unchanged id never spins');
+      adopt(newest.snapshot);
+      await settle();
+    }
+    assert.deepEqual(calls.map((call) => call.id), [1, 3]);
+    calls[1].resolve(snapshots.get(newest.snapshot.id).periods.allTime.sessions);
+    await settle();
+    assert.deepEqual(Object.keys(state.stats.periods.allTime.sessions), ['newest']);
+    loader.ensure();
+    await settle();
+    assert.equal(calls.length, 2);
+  });
+}
+
+test('the renderer requests detail only for a visible Settings or TOTAL session/project consumer', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../../src/electron/renderer/app.js'), 'utf8');
+  const definition = app.match(/function allTimeSessionsNeeded\(\) \{[\s\S]*?\n\}/)[0];
+  let surface = 'main';
+  let settingsOpen = false;
+  const state = { period: 'allTime', breakdown: 'home' };
+  const needed = vm.runInNewContext(`(${definition})`, {
+    visibleStatsSurface: () => surface,
+    isSettingsPanelOpen: () => settingsOpen,
+    state
+  });
+  assert.equal(needed(), false, 'Home does not pull on startup');
+  settingsOpen = true;
+  assert.equal(needed(), true, 'Settings needs its archived session count');
+  settingsOpen = false;
+  for (const breakdown of ['session', 'project']) {
+    state.breakdown = breakdown;
+    assert.equal(needed(), true);
+    state.period = 'today';
+    assert.equal(needed(), false);
+    state.period = 'allTime';
+    for (const hiddenSurface of [null, 'bubble']) {
+      surface = hiddenSurface;
+      assert.equal(needed(), false, 'stored TOTAL selection does not make a hidden surface a consumer');
+      settingsOpen = true;
+      assert.equal(needed(), false, 'hidden Settings is not a consumer');
+      settingsOpen = false;
+    }
+    surface = 'main';
+  }
+});
+
+for (const entryPoint of ['render', 'renderStatsUpdate', 'handleWindowVisibilityChange']) {
+  test(`${entryPoint} releases the attached list before its hidden return`, async () => {
+    const { loader, calls, state, reconcile, setNeeded } = harness();
+    reconcile();
+    await settle();
+    calls[0].resolve({ archived: {} });
+    await settle();
+    assert.ok(state.stats.periods.allTime.sessions.archived);
+    setNeeded(false);
+
+    const app = fs.readFileSync(path.join(__dirname, '../../src/electron/renderer/app.js'), 'utf8');
+    const start = app.indexOf(`function ${entryPoint}()`);
+    const definition = app.slice(start, app.indexOf('\n}', start) + 2);
+    const run = vm.runInNewContext(`(${definition})`, {
+      state,
+      allTimeSessions: loader,
+      visibleStatsSurface: () => null,
+      renderConnectionStatus: () => {},
+      statsRenderScheduler: { request() {}, visibilityChanged: () => false }
+    });
+    run();
+    assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+    assert.equal(loader.loaded(), false);
+    await settle();
+    assert.equal(calls.length, 1);
+  });
+}
+
+test('closing Settings releases its detail without waiting for a stats push', async () => {
+  const { loader, calls, state, reconcile, setNeeded } = harness();
+  reconcile();
+  await settle();
+  calls[0].resolve({ archived: {} });
+  await settle();
+  const app = fs.readFileSync(path.join(__dirname, '../../src/electron/renderer/app.js'), 'utf8');
+  const definition = app.match(/els\.settingsButton\.addEventListener\('click', (\(event\) => \{[\s\S]*?\n\})\);/)[1];
+  const run = vm.runInNewContext(`(${definition})`, {
+    state,
+    allTimeSessions: loader,
+    els: {
+      settingsPanel: { classList: { toggle: () => setNeeded(false) } },
+      settingsButton: { blur() {} },
+      shell: { classList: { toggle() {} }, style: {} }
+    },
+    isSettingsPanelOpen: () => false,
+    resetSettingsListSearch() {},
+    stopWindowShortcutRecording() {},
+    requestAnimationFrame: (callback) => callback(),
+    ensureServiceStatusTicker() {}
+  });
+  run({ detail: 0 });
+  assert.equal(loader.loaded(), false);
+  assert.equal(Object.hasOwn(state.stats.periods.allTime, 'sessions'), false);
+  await settle();
+  assert.equal(calls.length, 1);
+});
+
+test('the renderer reconciles every stats adoption and releases before hidden early returns', () => {
   const rendererDir = path.join(__dirname, '..', '..', 'src', 'electron', 'renderer');
   const app = fs.readFileSync(path.join(rendererDir, 'app.js'), 'utf8');
   const html = fs.readFileSync(path.join(rendererDir, 'index.html'), 'utf8');
@@ -195,8 +410,10 @@ test('the renderer attaches the pulled list to every stats it adopts and pulls f
   assert.ok(html.indexOf('<script src="allTimeSessions.js">') < html.indexOf('<script src="app.js">'));
   assert.match(preload, /getAllTimeSessions: \(snapshotId\) => ipcRenderer\.invoke\('stats:allTimeSessions', snapshotId\)/);
   assert.match(app, /fetchSessions: \(snapshotId\) => window\.tokenMonitor\.getAllTimeSessions\(snapshotId\),\s*currentSnapshot: \(\) => state\.stats\?\.snapshot,/);
-  assert.equal((app.match(/allTimeSessions\.invalidate\(\);\s*state\.stats = allTimeSessions\.attach\(/g) || []).length, 2, 'push and refresh');
+  assert.equal((app.match(/allTimeSessions\.invalidate\(\);\s*state\.stats = allTimeSessions\.reconcile\(/g) || []).length, 2, 'push and refresh');
   assert.doesNotMatch(app, /state\.stats = (payload\.data\.stats|nextStats);/);
-  assert.match(app, /function render\(\) \{[\s\S]*?if \(!state\.stats\) return;\s*allTimeSessions\.ensure\(\);/);
-  assert.match(app, /allTimeSessions\.ensure\(\);\s*renderSessionUsageArchiveStatus\(\);/, 'Settings pulls for the archived count');
+  for (const name of ['render', 'renderStatsUpdate', 'handleWindowVisibilityChange', 'syncSettingsForm']) {
+    assert.match(app, new RegExp(`function ${name}\\(\\) \\{\\s*state\\.stats = allTimeSessions\\.reconcile\\(state\\.stats\\);`));
+  }
+  assert.match(app, /state\.floatingBubble = \{ collapsed: Boolean\(side\), side \};\s*state\.stats = allTimeSessions\.reconcile\(state\.stats\);/);
 });
