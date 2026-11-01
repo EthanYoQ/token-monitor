@@ -110,15 +110,55 @@ test('enabling does not snap an ordinary window; dragging docks and disabling re
   f.controller.dispose();
 });
 
-test('active reveal defeats a queued hide and keeps the window reachable', () => {
+test('active reveal defeats a queued hide and keeps the window reachable', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture({ settings: { mainWindowAutoHideSide: 'left', windowBounds: { x: 0, y: 100, width: 360, height: 600 } }, bounds: { x: 0, y: 100, width: 360, height: 600 } });
+  t.after(() => f.controller.dispose());
   f.controller.sync();
-  f.controller.hide();
+  f.controller.tick();
   f.controller.reveal({ active: true });
   assert.equal(f.bounds().x, 0);
   f.controller.tick();
+  t.mock.timers.tick(1000);
   assert.equal(f.bounds().x, 0);
-  f.controller.dispose();
+});
+
+test('leaving an actively revealed window hides it without a pointer visit', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const bounds = { x: 1560, y: 100, width: 360, height: 600 };
+  const f = fixture({ bounds, settings: { mainWindowAutoHideSide: 'right', windowBounds: bounds } });
+  t.after(() => f.controller.dispose());
+  f.controller.sync();
+  f.controller.hide();
+  f.controller.reveal({ active: true });
+  f.controller.tick();
+  t.mock.timers.tick(1000);
+  assert.equal(f.bounds().x, 1560);
+  f.win.emit('blur');
+  f.controller.tick();
+  t.mock.timers.tick(649);
+  assert.equal(f.bounds().x, 1560);
+  t.mock.timers.tick(1);
+  assert.equal(f.bounds().x, 1912);
+});
+
+test('leaving an actively revealed window preserves an ongoing interaction', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const bounds = { x: 1560, y: 100, width: 360, height: 600 };
+  const f = fixture({ bounds, settings: { mainWindowAutoHideSide: 'right', windowBounds: bounds } });
+  t.after(() => f.controller.dispose());
+  f.controller.sync();
+  f.controller.hide();
+  f.controller.reveal({ active: true });
+  f.controller.setInteracting(true);
+  f.win.emit('blur');
+  f.controller.tick();
+  t.mock.timers.tick(1000);
+  assert.equal(f.bounds().x, 1560);
+  f.controller.setInteracting(false);
+  f.controller.tick();
+  t.mock.timers.tick(650);
+  assert.equal(f.bounds().x, 1912);
 });
 
 test('a saved reserved edge is released on restore', () => {

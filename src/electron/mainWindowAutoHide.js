@@ -314,6 +314,10 @@ function createMainWindowAutoHide(options) {
     }, 0);
   }
 
+  function onBlur() {
+    activeReveal = false;
+  }
+
   function overRevealStrip(point) {
     return pointInside(point, win.getBounds()) && pointInside(point, display.workArea);
   }
@@ -383,6 +387,7 @@ function createMainWindowAutoHide(options) {
     } else release(true, visibleBounds(expanded, screen.getAllDisplays()));
   }
 
+  win.on('blur', onBlur);
   screen.on('display-added', onDisplayChange);
   screen.on('display-removed', onDisplayChange);
   screen.on('display-metrics-changed', onDisplayChange);
@@ -398,6 +403,7 @@ function createMainWindowAutoHide(options) {
       if (disposed) return;
       release(restore, expanded, restore);
       disposed = true;
+      win.removeListener('blur', onBlur);
       screen.removeListener('display-added', onDisplayChange);
       screen.removeListener('display-removed', onDisplayChange);
       screen.removeListener('display-metrics-changed', onDisplayChange);
