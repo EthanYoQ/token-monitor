@@ -276,8 +276,60 @@ test('Home Day and Month replace Codex with the named account date buckets', () 
   const shown = applyAccountActivityToStats(original, snapshot, '2024-01-01');
   assert.equal(shown.periods.today.clients.codex, 300);
   assert.equal(shown.periods.month.clients.codex, 1_000);
-  assert.equal(shown.periods.allTime.clients.codex, 1_000);
+  assert.equal(shown.periods.allTime.clients.codex, 29_930);
+  assert.equal(shown.codexAccountActivity.periods.allTime.accountBelowLocal, true);
   assert.equal(original.periods.today.clients.codex, 100);
+});
+
+test('lower account buckets preserve measured local Day Month and Total', () => {
+  const original = stats();
+  original.periods.today = { ...emptyPeriod(), totalTokens: 1_236, clients: { codex: 558, claude: 678 }, models: { gpt: 558, opus: 678 } };
+  original.periods.month = { ...emptyPeriod(), totalTokens: 2_500, clients: { codex: 1_000, claude: 1_500 } };
+  const raw = activity(500, '2026-09-26');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-09-26', tokens: 415 },
+    { startDate: '2026-09-27', tokens: 85 }
+  ];
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const shown = applyAccountActivityToStats(original, snapshot, '2024-01-01');
+  for (const [name, accountTokens] of [['today', 85], ['month', 500], ['allTime', 500]]) {
+    assert.equal(shown.periods[name].totalTokens, original.periods[name].totalTokens);
+    assert.equal(shown.periods[name], original.periods[name]);
+    assert.equal(shown.codexAccountActivity.periods[name].headlineSource, 'local');
+    assert.equal(shown.codexAccountActivity.periods[name].accountBelowLocal, true);
+    assert.equal(shown.codexAccountActivity.periods[name].accountTokens, accountTokens);
+  }
+  assert.equal(shown.codexAccountActivity.status, 'conflict');
+  assert.equal(snapshot.lifetimeTokens, 500);
+  const stale = applyAccountActivityToStats(original, snapshot, '2024-01-01', '', true, Date.parse('2026-09-27T06:00:00Z'));
+  assert.equal(stale.periods.today, original.periods.today);
+  assert.equal(stale.codexAccountActivity.status, 'stale');
+});
+
+test('history retains only current periods explicitly using a lower-account local fallback', () => {
+  const raw = activity(400, '2026-08-01');
+  raw.codexAccountActivity.dailyUsageBuckets = [
+    { startDate: '2026-08-01', tokens: 300 },
+    { startDate: '2026-09-26', tokens: 100 },
+    { startDate: '2026-09-27', tokens: 0 }
+  ];
+  const snapshot = normalizeAccountActivity(raw, 'account-a');
+  const original = stats();
+  original.periods.month = { ...emptyPeriod(), totalTokens: 250, clients: { codex: 250 } };
+  const presented = applyAccountActivityToStats(original, snapshot, '2024-01-01');
+  const row = (field, key, tokens) => ({ [field]: key, tokens, perClient: { codex: { tokens } } });
+  const history = {
+    daily: [row('date', '2026-09-26', 150), row('date', '2026-09-27', 90)],
+    monthly: [row('month', '2026-08', 350), row('month', '2026-09', 240)],
+    summary: {}
+  };
+  const shown = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-27' });
+  assert.equal(shown.daily.find((entry) => entry.date === '2026-09-27').tokens, 90);
+  assert.equal(shown.daily.find((entry) => entry.date === '2026-09-26').tokens, 100);
+  assert.equal(shown.monthly.find((entry) => entry.month === '2026-09').tokens, 240);
+  assert.equal(shown.monthly.find((entry) => entry.month === '2026-08').tokens, 300);
+  assert.equal(shown.daily.find((entry) => entry.date === '2026-09-27').codexAccountActivity.headlineSource, 'local');
+  assert.equal(history.daily[0].tokens, 150);
 });
 
 test('lagging account dates retain local Day but never add it to official Month or Total', () => {
@@ -303,7 +355,7 @@ test('lagging account dates retain local Day but never add it to official Month 
   assert.equal(original.periods.month.clients.codex, 225_000_000);
 });
 
-test('official zero differs from a missing day and all period components preserve other clients', () => {
+test('official zero preserves measured local usage while larger account periods preserve other clients', () => {
   const original = stats();
   const period = {
     ...emptyPeriod(), totalTokens: 130, clients: { codex: 100, claude: 30 },
@@ -317,7 +369,9 @@ test('official zero differs from a missing day and all period components preserv
   const raw = activity(400, '2026-09-26');
   raw.codexAccountActivity.dailyUsageBuckets.push({ startDate: '2026-09-27', tokens: 0 });
   const shown = applyAccountActivityToStats(original, normalizeAccountActivity(raw, 'account-a'), '2024-01-01');
-  for (const [name, official] of [['today', 0], ['month', 400], ['allTime', 400]]) {
+  assert.equal(shown.periods.today, period);
+  assert.equal(shown.codexAccountActivity.periods.today.accountTokens, 0);
+  for (const [name, official] of [['month', 400], ['allTime', 400]]) {
     const projected = shown.periods[name];
     assert.equal(projected.totalTokens, 30 + official);
     assert.deepEqual(projected.clients, { codex: official, claude: 30 });
@@ -334,7 +388,11 @@ test('official zero differs from a missing day and all period components preserv
     assert.equal(projected.capabilities.tokenComponents, false);
   }
   assert.equal(period.clients.codex, 100);
-  assert.equal(shown.codexAccountActivity.periods.today.headlineSource, 'codex-account');
+  assert.equal(shown.codexAccountActivity.periods.today.headlineSource, 'local');
+  original.periods.today = { ...emptyPeriod(), clients: { codex: 0 } };
+  const zero = applyAccountActivityToStats(original, normalizeAccountActivity(raw, 'account-a'), '2024-01-01');
+  assert.equal(zero.periods.today.totalTokens, 0);
+  assert.equal(zero.codexAccountActivity.periods.today.headlineSource, 'codex-account');
 });
 
 test('history preserves missing account dates and replaces an explicit zero', () => {
@@ -345,7 +403,7 @@ test('history preserves missing account dates and replaces an explicit zero', ()
     perClient: { codex: { tokens: 20, cost: 2 }, claude: { tokens: 5, cost: 1 } } });
   const history = { daily: [localRow('2026-09-27'), localRow('2026-09-28')],
     monthly: [{ month: '2026-09', tokens: 50, perClient: { codex: { tokens: 40 }, claude: { tokens: 10 } } }], summary: {} };
-  const presented = applyAccountActivityToStats(stats(), snapshot, '2024-01-01');
+  const presented = applyAccountActivityToStats(stats(), snapshot, '2024-01-01', '', true, Date.parse('2026-09-28T04:00:00Z'));
   const projected = projectAccountActivityToHistory(history, snapshot, presented, { todayKey: '2026-09-28' });
   assert.deepEqual(projected.daily.map((row) => [row.date, row.tokens]), [
     ['2026-09-26', 100], ['2026-09-27', 5], ['2026-09-28', 25]
@@ -393,8 +451,10 @@ test('Home selects local date names without shifting official buckets and invali
     nowMs = Date.parse('2026-09-30T16:00:00Z');
     const october = project(original);
     assert.notEqual(october, september);
-    assert.equal(october.periods.today.clients.codex, 0);
-    assert.equal(october.periods.month.clients.codex, 0);
+    assert.equal(october.periods.today.clients.codex, 100);
+    assert.equal(october.periods.month.clients.codex, 100);
+    assert.equal(october.codexAccountActivity.periods.today.accountTokens, 0);
+    assert.equal(october.codexAccountActivity.periods.month.accountTokens, 0);
     assert.equal(october.codexAccountActivity.periods.today.selectedDate, '2026-10-01');
   } finally {
     if (previousTz === undefined) delete process.env.TZ;
@@ -595,8 +655,9 @@ test('local Codex above account total keeps local details for every tool with ex
   aggregate.periods.allTime.costUsd = 12;
   aggregate.periods.allTime.clientCosts = { codex: 10, claude: 2 };
   const shown = applyAccountActivityToStats(aggregate, normalizeAccountActivity(activity(20_000), 'account-a'), '2024-01-01');
-  assert.equal(shown.periods.allTime.clients.codex, 20_000);
-  assert.equal(shown.periods.allTime.totalTokens, 22_000);
+  assert.equal(shown.periods.allTime.clients.codex, 29_930);
+  assert.equal(shown.periods.allTime.totalTokens, 31_930);
+  assert.equal(shown.codexAccountActivity.periods.allTime.accountTokens, 20_000);
   assert.equal(shown.codexAccountActivity.status, 'conflict');
   assert.deepEqual(shown.periods.allTime.models, aggregate.periods.allTime.models);
   assert.deepEqual(shown.periods.allTime.sessions, aggregate.periods.allTime.sessions);
@@ -617,7 +678,7 @@ test('renderer retains archived sessions when local Codex detail exceeds the acc
   assert.equal(shown.codexAccountActivity.status, 'conflict');
   assert.equal(shown.codexAccountActivity.detailsSuppressed, false);
   assert.equal(overlay(shown).periods.allTime.sessions['claude:archived'], archivedClaude);
-  assert.equal(shown.periods.allTime.clients.codex, 20_000);
+  assert.equal(shown.periods.allTime.clients.codex, 29_930);
   assert.equal(original.periods.allTime.sessions['claude:archived'], undefined);
 
   const legacy = stats();

@@ -368,6 +368,23 @@ test('a larger healthy graph retains unavailable client observations from the li
   assert.equal(restored.perClient['open-code-review'].tokens, 120);
 });
 
+test('a larger native live day does not discard newer review usage in the graph', () => {
+  const date = '2026-10-15';
+  const archive = captureLiveDailyHistory({}, {
+    totalTokens: 775,
+    clients: { claude: 475, 'open-code-review': 300 },
+    clientModels: { claude: { opus: 475 }, 'open-code-review': { review: 300 } }
+  }, { todayKey: date });
+  const result = historyFrom(graphFromDailyHistoryArchive(
+    graph(date, [client('claude', 'opus', 473, 0, 5), client('open-code-review', 'review', 301, 0, 6)]),
+    archive,
+    { todayKey: date }
+  ), date).daily[0];
+  assert.equal(result.tokens, 776);
+  assert.equal(result.perClient.claude.tokens, 475);
+  assert.equal(result.perClient['open-code-review'].tokens, 301);
+});
+
 test('unavailable live capture rebases its healthy overlay on the latest saved client observations', () => {
   const date = '2026-10-06';
   const snapshot = (claude, ocr) => captureLiveDailyHistory({}, {

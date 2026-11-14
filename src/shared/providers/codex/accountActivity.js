@@ -109,14 +109,17 @@ function projectAccountStats(stats, snapshot, allTimeSince, localDeviceId = '', 
   for (const [name, officialTokens] of Object.entries(selected)) {
     const original = periods[name];
     if (!original) continue;
-    const usesAccount = officialTokens !== undefined;
-    if (usesAccount) {
+    const accountBelowLocal = officialTokens !== undefined && officialTokens < Number(original.clients?.codex || 0);
+    const usesAccount = officialTokens !== undefined && !accountBelowLocal;
+    if (officialTokens !== undefined) {
       const projected = replaceCodexPeriod(original, officialTokens);
       if (!projected) return { ...stats, codexAccountActivity: { ...readState, status: 'conflict' } };
-      periods[name] = projected;
+      periods[name] = usesAccount ? projected : original;
     }
     attribution[name] = {
       headlineSource: usesAccount ? 'codex-account' : 'local',
+      accountBelowLocal,
+      ...(accountBelowLocal ? { accountTokens: officialTokens } : {}),
       dateBoundary: usesAccount ? 'source-defined' : 'device-local',
       coverageThrough,
       reportingLag: coverageThrough < today,
@@ -181,12 +184,16 @@ function projectAccountActivityToHistory(history, snapshot, presentedStats, opti
         messages: row.perClient.codex?.messages || 0, unclassifiedTokens: accountTokens } }
     };
   };
+  const localFallbackKeys = {
+    date: account.periods?.today?.accountBelowLocal ? account.periods.today.selectedDate : null,
+    month: account.periods?.month?.accountBelowLocal ? account.periods.month.selectedMonth : null
+  };
   const projectRows = (rows, field, accountByKey) => {
     const result = [];
     const remaining = new Map(accountByKey);
     for (const row of rows || []) {
       const key = String(row?.[field] || '');
-      const usesAccount = remaining.has(key);
+      const usesAccount = remaining.has(key) && key !== localFallbackKeys[field];
       const projected = usesAccount ? replaceCodex(row, remaining.get(key)) : row;
       if (!projected) return null;
       result.push({ ...projected, codexAccountActivity: {

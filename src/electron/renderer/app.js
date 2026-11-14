@@ -6364,19 +6364,29 @@ function render() {
     els.codexAccountActivityNote.classList.toggle('hidden', !activity);
     const notes = [];
     if (attribution) {
-      const sourceKey = state.period === 'allTime' ? 'applied'
-        : `${state.period}${attribution.headlineSource === 'local' ? 'Local' : ''}`;
-      notes.push(t(`usage.codexAccountActivity.${sourceKey}`, {
-        date: attribution.selectedDate, month: attribution.selectedMonth
-      }));
+      if (attribution.accountBelowLocal) {
+        notes.push(t('usage.codexAccountActivity.belowLocal', {
+          account: formatNumber(attribution.accountTokens), local: formatNumber(attribution.localDetailTokens)
+        }));
+      } else {
+        const sourceKey = state.period === 'allTime' ? 'applied'
+          : `${state.period}${attribution.headlineSource === 'local' ? 'Local' : ''}`;
+        notes.push(t(`usage.codexAccountActivity.${sourceKey}`, {
+          date: attribution.selectedDate, month: attribution.selectedMonth
+        }));
+      }
       notes.push(t('usage.codexAccountActivity.coverage', { date: attribution.coverageThrough }));
       notes.push(t('usage.codexAccountActivity.boundary'));
       notes.push(t('usage.codexAccountActivity.details'));
+      if (attribution.headlineSource === 'codex-account' && ['home', 'model'].includes(state.breakdown)) {
+        const modelTotal = Object.values(period.models || {}).reduce((sum, tokens) => sum + Number(tokens || 0), 0);
+        notes.push(t('usage.codexAccountActivity.localModelTotal', { tokens: formatNumber(modelTotal) }));
+      }
       if (activity.status !== 'applied') notes.push(t(activityMessageKeys[activity.status]));
     } else if (activity) {
       notes.push(t(activityMessageKeys[activity.status] || activityMessageKeys['range-unverified']));
     }
-    if (activity?.periods?.today?.headlineSource === 'local') notes.push(t('usage.codexAccountActivity.historyLag'));
+    if (activity?.periods?.today?.reportingLag) notes.push(t('usage.codexAccountActivity.historyLag'));
     if (activity?.readStatus && activity.readStatus !== 'available') notes.push(t('usage.codexAccountActivity.readFailed'));
     if (activity?.fetchedAt) notes.push(t('usage.codexAccountActivity.lastRead', {
       date: new Date(activity.fetchedAt).toLocaleString(currentLocale())

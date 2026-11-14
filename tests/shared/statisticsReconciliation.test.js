@@ -99,8 +99,9 @@ test('official zero breaks a local streak while the account summary remains auth
 
 test('account-only refresh changes history revision and preview, with fixed totals from the same dates', () => {
   const history = normalizeHistory({ contributions: [day(today, 10, 'codex')] }, { todayKey: today });
-  const first = present(history, account([{ date: today, tokens: 50 }]));
-  const second = present(history, account([{ date: '2026-10-10', tokens: 40 }, { date: today, tokens: 60 }]));
+  const stats = localStats(10);
+  const first = present(history, account([{ date: today, tokens: 50 }]), stats);
+  const second = present(history, account([{ date: '2026-10-10', tokens: 40 }, { date: today, tokens: 60 }]), stats);
   assert.notEqual(first.stats.historyRevision, second.stats.historyRevision);
   assert.equal(home.shouldFetchHomeHistory({ requested: true, lastSignature: home.homeHistorySignature(first.stats), stats: second.stats }), true);
   assert.deepEqual(second.stats.historyPreview.daily.map(row => row.tokens), [40, 60]);
@@ -173,7 +174,7 @@ test('official cards preserve unknown, zero and seconds while fixed ranges retai
   const cards = accountStatsCards({ status: 'stale', summary: { currentStreakDays: 0, longestRunningTurnSec: 93962 } });
   assert.deepEqual(cards.map(card => card.value), [0, null, null, 93962000]);
   const local = normalizeHistory({ contributions: [day(today, 5, 'codex')] }, { todayKey: today });
-  const shown = present(local, account([{ date: today, tokens: 20 }]));
+  const shown = present(local, account([{ date: today, tokens: 20 }]), localStats(5));
   const sources = [{ deviceId: 'pc', historyAvailable: true, history: local, periodWindows: { today: { key: today, endsAt: '2026-10-12T00:00:00Z' }, timeZone: 'UTC' }, periods: { today: { totalTokens: 5, clients: { codex: 5 } }, allTime: { totalTokens: 5 } } }];
   const selected = fixed.fixedPeriodSnapshotForPresentation('last7', sources, shown.history, { todayKey: today, now: nowMs, historyAvailable: true });
   assert.equal(selected.period.totalTokens, 20);

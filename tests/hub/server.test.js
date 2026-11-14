@@ -523,21 +523,22 @@ test('back-to-back writes each get their own concurrency token', () => {
   }
 });
 
-test('a subscription write that cannot reach disk does not take effect in memory', async () => {
+test('a subscription write that cannot reach disk does not take effect in memory', (t) => {
   const dataFile = tempDataFile();
   const hub = createHub({ port: 0, host: '127.0.0.1', secret: 'shh', dataFile, logger: { error() {}, warn() {} } });
   try {
     const record = (id) => ({ id, provider: 'codex', startDate: '2026-05-31', currency: 'USD' });
     const written = hub.setSubscriptions([record('a')], '');
 
-    // A directory where the temp file belongs makes the atomic write fail. If
-    // memory moved anyway, this process would serve a record the file does not
-    // have and a restart would silently revert it.
-    fs.mkdirSync(`${dataFile}.tmp`, { recursive: true });
+    const rename = fs.renameSync;
+    const blockedRename = t.mock.method(fs, 'renameSync', (from, to) => {
+      if (to === dataFile) throw new Error('disk write blocked');
+      return rename(from, to);
+    });
     try {
-      assert.throws(() => hub.setSubscriptions([record('a'), record('b')], written.updatedAt));
+      assert.throws(() => hub.setSubscriptions([record('a'), record('b')], written.updatedAt), /disk write blocked/);
     } finally {
-      fs.rmSync(`${dataFile}.tmp`, { recursive: true, force: true });
+      blockedRename.mock.restore();
     }
     assert.deepEqual(hub.getSubscriptions().subscriptions.map((entry) => entry.id), ['a']);
     assert.equal(hub.getSubscriptions().updatedAt, written.updatedAt);
