@@ -628,7 +628,7 @@ function graphFromDailyHistoryArchive(graphs, archive, options = {}) {
       const previousClients = observationTokenMaps(previous.observations).perClient;
       const liveClients = observationTokenMaps(liveDay.observations).perClient;
       const keepPrevious = new Set(), keepLive = new Set();
-      for (const client of options.unavailableClients || []) {
+      for (const client of new Set(['open-code-review', ...(options.unavailableClients || [])])) {
         const normalized = normalizeTokscaleClientName(client);
         (num(previousClients[normalized]) >= num(liveClients[normalized]) ? keepPrevious : keepLive).add(normalized);
       }

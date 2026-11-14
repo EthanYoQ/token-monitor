@@ -60,10 +60,22 @@ function readJson(filePath, fallback = null) {
 }
 
 function writeJsonAtomic(filePath, value) {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  fs.renameSync(tempPath, filePath);
+  const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+  const fd = fs.openSync(tempPath, 'wx');
+  try {
+    try {
+      fs.writeFileSync(fd, content, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try { fs.unlinkSync(tempPath); } catch (_) {}
+    throw error;
+  }
 }
 
 function loadDotEnv() {
