@@ -30,7 +30,7 @@ const UNSUPPORTED_CUSTOM_SCAN_CLIENTS = new Set([
   'cursor'
 ]);
 const CUSTOM_SCAN_CLIENT_IDS = Object.freeze(
-  CLIENT_IDS.filter((id) => !UNSUPPORTED_CUSTOM_SCAN_CLIENTS.has(id))
+  CLIENT_IDS.filter((id) => id === 'pagekin' || !UNSUPPORTED_CUSTOM_SCAN_CLIENTS.has(id))
 );
 const TOKSCALE_CLIENTS = new Set(CUSTOM_SCAN_CLIENT_IDS);
 // Paths are keyed by tracked-client id, so a persisted object written before an

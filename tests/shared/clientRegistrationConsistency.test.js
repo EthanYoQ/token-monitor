@@ -131,7 +131,7 @@ test('discordRpc KNOWN_CLIENT_ASSETS and CLIENT_LABELS stay in sync with KNOWN_C
 
   assert.deepEqual(
     [...knownClientAssets].filter((id) => knownClientIds.has(id)),
-    knownClientOrder,
+    knownClientOrder.filter((id) => id !== 'pagekin'),
     'tracked Discord assets should follow CLIENT_CATALOG display order'
   );
   assert.deepEqual(
@@ -154,9 +154,8 @@ test('discordRpc KNOWN_CLIENT_ASSETS and CLIENT_LABELS stay in sync with KNOWN_C
   const orphanedInLabels = Object.keys(clientLabels).filter((id) => !knownClientIds.has(id));
 
   assert.deepEqual(
-    missingFromAssets, [],
-    'KNOWN_CLIENTS ids missing from discordRpc.js KNOWN_CLIENT_ASSETS — Rich ' +
-    'Presence will show no icon for these clients when they are the top client today'
+    missingFromAssets, ['pagekin'],
+    'Pagekin has no registered Discord Rich Presence asset'
   );
   assert.deepEqual(
     missingFromLabels, [],

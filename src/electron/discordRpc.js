@@ -15,7 +15,7 @@ const CLIENT_LABELS = {
   claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', hermes: 'Hermes Agent',
   openclaw: 'OpenClaw', cursor: 'Cursor', antigravity: 'Antigravity', cline: 'Cline',
   amp: 'Amp', droid: 'Factory Droid', kimi: 'Kimi', qwen: 'Qwen', grok: 'Grok Build', copilot: 'GitHub Copilot',
-  pi: 'Pi', omp: 'Oh My Pi', zed: 'Zed', kilo: 'Kilo', commandcode: 'Command Code', mimo: 'Xiaomi MiMo', zcode: 'ZCode', kiro: 'Kiro', codebuddy: 'CodeBuddy', workbuddy: 'WorkBuddy', proma: 'Proma', qodercn: 'Qoder CN', 'open-code-review': 'Open Code Review', reasonix: 'Reasonix', dsh: 'DeepSeek Harness', cherrystudio: 'Cherry Studio', lmstudio: 'LM Studio', unsloth: 'Unsloth', devin: 'Devin',
+  pi: 'Pi', omp: 'Oh My Pi', zed: 'Zed', kilo: 'Kilo', commandcode: 'Command Code', mimo: 'Xiaomi MiMo', zcode: 'ZCode', kiro: 'Kiro', codebuddy: 'CodeBuddy', workbuddy: 'WorkBuddy', proma: 'Proma', qodercn: 'Qoder CN', pagekin: 'Pagekin', 'open-code-review': 'Open Code Review', reasonix: 'Reasonix', dsh: 'DeepSeek Harness', cherrystudio: 'Cherry Studio', lmstudio: 'LM Studio', unsloth: 'Unsloth', devin: 'Devin',
   gemini: 'Gemini'
 };
 const UPDATE_MIN_INTERVAL_MS = 15000;

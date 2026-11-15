@@ -218,6 +218,8 @@ const CLIENT_SOURCE_CHECK_IDS = Object.freeze([
   'opencode-data',
   'openclaw-agents',
   'pi-sessions',
+  'pagekin-db',
+  'pagekin-index',
   'proma-sessions',
   'qodercn-db',
   'qodercn-projects',
