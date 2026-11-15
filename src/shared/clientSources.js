@@ -10,6 +10,7 @@ const { claudeSessionRoots } = require('./providers/claude/paths');
 const { hermesProfileWatchDirs, resolveHermesHome } = require('./providers/hermes/profiles');
 const { kimiCodeSessionsHome, kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
 const { qoderCnDataPaths } = require('./providers/qodercn/usage');
+const { pagekinSources } = require('./providers/pagekin/usage');
 const { openCodeReviewSessionsDir } = require('./providers/open-code-review/usage');
 const { resolveReasonixStatsDir, REASONIX_SOURCE_CHECK_ID } = require('./providers/reasonix/paths');
 const { resolveDshSessionsDir, DSH_SOURCE_CHECK_ID } = require('./providers/dsh/paths');
@@ -356,6 +357,14 @@ function clientSourceRoots(clientsCsv, options = {}) {
   );
   // Proma — session transcripts at ~/.proma/agent-sessions/*.jsonl
   add('proma', ['proma-sessions', path.join(home, '.proma', 'agent-sessions')]);
+  if (enabled.has('pagekin')) {
+    const projectPaths = normalizeCustomScanPaths(options.customScanPaths, { platform }).pagekin;
+    const pagekin = pagekinSources({ env, platform, homeDir: home, projectPaths });
+    add('pagekin',
+      ...[pagekin.receiptPath, pagekin.indexPath].filter(Boolean).map((file) => ['pagekin-index', path.dirname(file), file]),
+      ...pagekin.databases.map((file) => ['pagekin-db', path.dirname(file), file])
+    );
+  }
   add('open-code-review', ['open-code-review-sessions', openCodeReviewSessionsDir(home)]);
   // Qoder CN — legacy SQLite DB under the platform Application Support dir,
   // or the JSONL transcript tree used by current builds.
@@ -466,7 +475,7 @@ function clientSourceRoots(clientsCsv, options = {}) {
   );
   const customScanPaths = normalizeCustomScanPaths(options.customScanPaths, { platform });
   for (const [client, dirs] of Object.entries(customScanPaths)) {
-    if (!enabled.has(client)) continue;
+    if (!enabled.has(client) || client === 'pagekin') continue;
     const roots = byClient[client] || (byClient[client] = []);
     roots.push(...dirs.map((dir) => ({ id: 'custom-scan-path', dir, custom: true })));
   }

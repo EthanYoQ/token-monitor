@@ -49,6 +49,7 @@ const {
   sessionMetadataMap
 } = require('./sessionMetadata');
 const { kimiWorkSessionsRoots } = require('./providers/kimi/sessionMetadata');
+const { buildPagekinUsage, collectPagekinRows, pagekinHistoryRevision, PROJECT_DB: PAGEKIN_DB, FREEZE: PAGEKIN_FREEZE, AUTHORITY: PAGEKIN_AUTHORITY } = require('./providers/pagekin/usage');
 const { buildPromaHistoryGraph, buildPromaPeriods, collectPromaRows } = require('./providers/proma/usage');
 const { buildOpenCodeReviewHistoryGraph, buildOpenCodeReviewPeriods, collectOpenCodeReviewRows,
   compactOpenCodeReviewRows, openCodeReviewHistoryRevision } = require('./providers/open-code-review/usage');
@@ -1092,6 +1093,10 @@ async function collectHistoryOnce(options) {
     rawGraphs.push(options.qoderCnGraph);
     histories.push(normalizeHistory(parseGraphResult(options.qoderCnGraph), { capDays, todayKey }));
   }
+  if (options.pagekinGraph) {
+    rawGraphs.push(options.pagekinGraph);
+    histories.push(normalizeHistory(parseGraphResult(options.pagekinGraph), { capDays, todayKey }));
+  }
   if (options.openCodeReviewGraph) {
     rawGraphs.push(options.openCodeReviewGraph);
     histories.push(normalizeHistory(parseGraphResult(options.openCodeReviewGraph), { capDays, todayKey }));
@@ -1206,6 +1211,7 @@ async function collectUsageOnce(options) {
   const includesCcSwitchClaude = options.ccSwitchClaudeEnabled === true && platformValue === 'win32'
     && normalizedClients.split(',').includes('claude');
   const includesQoderCn = normalizedClients.split(',').includes('qodercn');
+  const includesPagekin = normalizedClients.split(',').includes('pagekin');
   const includesOpenCodeReview = normalizedClients.split(',').includes('open-code-review');
   const trackedClientSet = new Set(normalizedClients.split(',').filter(Boolean));
   const targetClients = [...new Set(normalizeClientsCsv(options.targetClients).split(',').filter((client) => trackedClientSet.has(client)))];
@@ -1238,6 +1244,10 @@ async function collectUsageOnce(options) {
   let qoderCnRows = null;
   let qoderCnPricing = null;
   let qoderCnPeriodReadFailed = false;
+  let pagekinPeriods = null;
+  let pagekinGraph = null;
+  let pagekinReadFailed = false;
+  let pagekinRevision = anchor?.pagekinRevision;
   let openCodeReviewRows = null;
   let openCodeReviewPeriods = null;
   let openCodeReviewReadFailed = false;
@@ -1261,11 +1271,37 @@ async function collectUsageOnce(options) {
     if (promaPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, promaPeriods.month);
     if (qoderCnPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, qoderCnPeriods.today);
     if (qoderCnPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, qoderCnPeriods.month);
+    if (pagekinPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, pagekinPeriods.today);
+    if (pagekinPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, pagekinPeriods.month);
     if (openCodeReviewPeriods?.today && progress.today) progress.today = mergePeriods(progress.today, openCodeReviewPeriods.today);
     if (openCodeReviewPeriods?.month && progress.month) progress.month = mergePeriods(progress.month, openCodeReviewPeriods.month);
     try { options.onProgress({ ...progress, updatedAt: new Date().toISOString() }); } catch (_) {}
   };
   if (normalizedClients) {
+    if (includesPagekin && (!targetRequested || targetClientSet.has('pagekin') || options.includeHistory)) {
+      const pagekinToday = localTodayKey(collectedAt);
+      let rows;
+      try {
+        const projectPaths = normalizeCustomScanPaths(options.customScanPaths, { platform: platformValue }).pagekin;
+        rows = collectPagekinRows({ env: options.env, platform: platformValue, homeDir: options.homeDir, projectPaths });
+        if (options.pagekinState) options.pagekinState.rows = rows;
+      } catch (_) {
+        pagekinReadFailed = true;
+        rows = options.pagekinState?.rows ?? pagekinRowsFromAnchor(options.pagekinFallbackAnchor || anchor, pagekinToday);
+        try { options.logger?.('pagekin usage read failed'); } catch (_) {}
+      }
+      if (!pagekinReadFailed) {
+        pagekinRevision = pagekinHistoryRevision(rows, pagekinToday);
+        if (anchorUsed && pagekinRevision !== anchor.pagekinRevision) {
+          return collectUsageOnce({ ...options, now: collectedAt, todayOnlyAnchor: null, targetClients: null });
+        }
+      }
+      if (rows) {
+        const usage = buildPagekinUsage(rows, collectedAt, allTimeSince);
+        pagekinPeriods = Object.fromEntries(Object.entries(usage.periods).map(([period, value]) => [period, extractUsageFromTokscale(value)]));
+        pagekinGraph = usage.graph;
+      }
+    }
     if (includesOpenCodeReview && (!targetRequested || targetClientSet.has('open-code-review') || options.includeHistory)) {
       try {
         const rows = await collectOpenCodeReviewRows({ homeDir: options.homeDir,
@@ -1419,6 +1455,7 @@ async function collectUsageOnce(options) {
       }
       if (promaPeriods) freshPartitions.proma = promaPeriods.today;
       if (qoderCnPeriods) freshPartitions.qodercn = qoderCnPeriods.today;
+      if (pagekinPeriods) freshPartitions.pagekin = pagekinPeriods.today;
       if (openCodeReviewPeriods) freshPartitions['open-code-review'] = openCodeReviewPeriods.today;
       if (includesCcSwitchClaude && (!useTargetedPartitions || targetClientSet.has('claude'))) {
         ccSwitchClaudeRefreshed = true;
@@ -1432,6 +1469,9 @@ async function collectUsageOnce(options) {
         // A transient local.db read failure must not turn the existing Qoder CN
         // partition into an empty one or subtract it from month/allTime.
         freshPartitions.qodercn = anchor.todayPartitions.qodercn;
+      }
+      if (pagekinReadFailed && !pagekinPeriods && anchor.todayPartitions?.pagekin) {
+        freshPartitions.pagekin = anchor.todayPartitions.pagekin;
       }
       if (openCodeReviewReadFailed && anchor.todayPartitions?.['open-code-review']) {
         freshPartitions['open-code-review'] = anchor.todayPartitions['open-code-review'];
@@ -1503,6 +1543,12 @@ async function collectUsageOnce(options) {
       allTime = mergePeriods(allTime, promaPeriods.allTime);
       todayPartitions = { ...(todayPartitions || {}), proma: promaPeriods.today };
     }
+    if (pagekinPeriods && !anchorUsed) {
+      today = mergePeriods(today, pagekinPeriods.today);
+      month = mergePeriods(month, pagekinPeriods.month);
+      allTime = mergePeriods(allTime, pagekinPeriods.allTime);
+      todayPartitions = { ...(todayPartitions || {}), pagekin: pagekinPeriods.today };
+    }
     if (openCodeReviewPeriods && !anchorUsed) {
       today = mergePeriods(today, openCodeReviewPeriods.today);
       month = mergePeriods(month, openCodeReviewPeriods.month);
@@ -1547,6 +1593,7 @@ async function collectUsageOnce(options) {
   // 3. !anchorUsed (full scan): scan WSL as part of the complete rescan.
   const windowsPeriods = { today, month, allTime };
   const unavailableClients = [
+    ...(pagekinReadFailed ? ['pagekin'] : []),
     ...(openCodeReviewReadFailed ? ['open-code-review'] : []),
     ...(promaReadFailed ? ['proma'] : [])
   ];
@@ -1707,6 +1754,8 @@ async function collectUsageOnce(options) {
       windowsPeriods,
       todayPartitions,
       qoderCnPeriods,
+      pagekinReadFailed,
+      pagekinRevision,
       openCodeReviewReadFailed,
       promaReadFailed,
       unavailableClients,
@@ -1766,6 +1815,7 @@ async function collectUsageOnce(options) {
       promaGraph: promaRows ? buildPromaHistoryGraph({ rows: promaRows, pricingByModel: promaPricing || {} }) : null,
       ccSwitchClaudeGraph: includesCcSwitchClaude ? ccSwitchClaudeGraph(admittedCcRows.filter((row) => row.date >= allTimeSince)) : null,
       qoderCnGraph: historyQoderCnGraph || null,
+      pagekinGraph,
       openCodeReviewGraph: openCodeReviewRows ? buildOpenCodeReviewHistoryGraph({ rows: openCodeReviewRows }) : null,
       historyEnabled: options.historyEnabled,
       commandTimeoutMs: options.historyTimeoutMs,
@@ -1936,6 +1986,14 @@ function watchAttributionRootsForClients(clientsCsv, watchRoots = null, options 
         ...databases.flatMap(({ sourcePath }) => [sourcePath, `${sourcePath}-wal`, `${sourcePath}-shm`])
       ]
     };
+  }
+  if (rootsByClient.pagekin) {
+    const paths = (clientSourceRoots('pagekin', options).pagekin || []).flatMap(({ sourcePath, id, dir }) => (
+      id === 'pagekin-db'
+        ? [sourcePath, `${sourcePath}-wal`, path.join(dir, PAGEKIN_FREEZE), path.join(dir, PAGEKIN_AUTHORITY)]
+        : [sourcePath]
+    ));
+    attributedRoots = { ...attributedRoots, pagekin: paths };
   }
   if (options.ccSwitchClaudeEnabled === true && rootsByClient.claude) {
     const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
@@ -2130,6 +2188,9 @@ function watchPolicyEntries(clientsCsv, options = {}) {
 
   bound('workbuddy', [...withBasename('workbuddy', '.workbuddy'), ...withBasename('workbuddy', '.workbuddy-ai')],
     directChildOnly((child) => /^workbuddy\.db(?:-(?:wal|shm))?$/.test(child)));
+
+  bound('pagekin', candidates.pagekin || [], directChildOnly((name) =>
+    [PAGEKIN_DB, `${PAGEKIN_DB}-wal`, PAGEKIN_FREEZE, PAGEKIN_AUTHORITY, 'receipt.json', 'recent-projects.json'].includes(name)));
 
   if (options.ccSwitchClaudeEnabled === true) {
     const dbPath = options.ccSwitchDbPath || path.join(options.homeDir || os.homedir(), '.cc-switch', 'cc-switch.db');
@@ -2501,6 +2562,25 @@ function mergeTodayPartitions(partitions) {
   return mergePeriods(...Object.values(partitions || {}));
 }
 
+function pagekinRowsFromAnchor(anchor, todayKey) {
+  if (anchor?.dateKey !== todayKey) return undefined;
+  const rows = new Map();
+  for (const period of [anchor.today, anchor.month, anchor.allTime]) {
+    let tokens = 0;
+    for (const key in period?.sessions || {}) {
+      if (!key.startsWith('pagekin:')) continue;
+      const { sessionId, startedAt, models, totalTokens, inputTokens, outputTokens } = period.sessions[key] || {};
+      const model = Object.keys(models || {})[0];
+      const createdAt = Date.parse(startedAt);
+      if (!sessionId || !model || !Number.isFinite(createdAt) || totalTokens !== inputTokens + outputTokens) return undefined;
+      rows.set(sessionId, { sessionId, createdAt, model, totalTokens, input: inputTokens, output: outputTokens });
+      tokens += totalTokens;
+    }
+    if (tokens !== (period?.clients?.pagekin || 0)) return undefined;
+  }
+  return [...rows.values()];
+}
+
 function periodHasUsage(period) {
   if (!period) return false;
   return Number(period.totalTokens || 0) > 0
@@ -2562,7 +2642,11 @@ function qoderCnProjectsDirForClients(clientsCsv, options = {}) {
 // a seed has nothing to stand on and declines.
 function collectorAnchorTrust(saved, options = {}) {
   const { clients = '', allTimeSince = '', projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false, ccSwitchDbPath = '', now = new Date() } = options;
-  if (!saved || saved.dateKey !== localTodayKey(now)) return null;
+  if (!saved) return null;
+  const todayKey = localTodayKey(now);
+  const pastDateAllowed = options.allowPastDate === true
+    && /^\d{4}-\d{2}-\d{2}$/.test(saved.dateKey) && saved.dateKey < todayKey;
+  if (saved.dateKey !== todayKey && !pastDateAllowed) return null;
   if (!saved.today || !saved.month || !saved.allTime) return null;
   // Old Cursor anchors preserve `default` in their broad-period model maps;
   // applying a new `cursor-auto` Today delta to them would split one mode.
@@ -2757,6 +2841,7 @@ function startCollector(options) {
   // later full/history tick instead of losing it at the tick boundary.
   let liveDailyHistoryDays = {};
   let qoderCnHistoryGraph = null;
+  const pagekinState = { rows: null };
   const openCodeReviewState = { snapshot: null };
   const promaState = { rows: null };
   let lastFullScanAt = 0;
@@ -2850,7 +2935,7 @@ function startCollector(options) {
   if (options.anchorPersistenceEnabled !== false) {
     try {
       const saved = readJson(anchorPath, null);
-      const trust = collectorAnchorTrust(saved, {
+      const trustOptions = {
         clients,
         allTimeSince,
         projectsEnabled: options.projectsEnabled,
@@ -2859,7 +2944,12 @@ function startCollector(options) {
         customScanPaths: options.customScanPaths,
         ccSwitchClaudeEnabled: options.ccSwitchClaudeEnabled === true,
         ccSwitchDbPath: options.ccSwitchDbPath
-      });
+      };
+      const trust = collectorAnchorTrust(saved, trustOptions);
+      if (!trust && clients.split(',').includes('pagekin')
+        && collectorAnchorTrust(saved, { ...trustOptions, allowPastDate: true })?.capturedAtMs != null) {
+        pagekinState.rows = pagekinRowsFromAnchor(saved, saved.dateKey);
+      }
       if (trust) {
         anchor = {
           dateKey: saved.dateKey,
@@ -2867,6 +2957,7 @@ function startCollector(options) {
           month: saved.month,
           allTime: saved.allTime,
           qoderCnPeriods: saved.qoderCnPeriods || null,
+          pagekinRevision: saved.pagekinRevision,
           openCodeReviewHistoryRevision: saved.openCodeReviewHistoryRevision,
           ccSwitchAdmittedRows: saved.ccSwitchAdmittedRows || [],
           ccSwitchTodayAdmitted: saved.ccSwitchTodayAdmitted === true,
@@ -2996,6 +3087,8 @@ function startCollector(options) {
         qoderCnFallbackPeriods: anchor?.qoderCnPeriods || null,
         qoderCnHistoryFallbackGraph: qoderCnHistoryGraph,
         qoderCnReadState,
+        pagekinState,
+        pagekinFallbackAnchor: anchor,
         openCodeReviewState,
         promaState,
         onAnchorComputed: (x) => { captured = x; },
@@ -3072,6 +3165,7 @@ function startCollector(options) {
           allTime: captured.windowsPeriods.allTime,
           todayPartitions: captured.todayPartitions,
           qoderCnPeriods: captured.qoderCnPeriods,
+          pagekinRevision: captured.pagekinRevision,
           openCodeReviewHistoryRevision: captured.openCodeReviewHistoryRevision,
           ccSwitchAdmittedRows: captured.ccSwitchAdmittedRows,
           ccSwitchTodayAdmitted: captured.ccSwitchTodayAdmitted,
@@ -3081,7 +3175,7 @@ function startCollector(options) {
         wslAnchor = captured.wslBundle;
         wslStatusAnchor = captured.wslStatus || null;
         if (!qoderCnReadState.periodFailed) lastFullScanAt = Date.now();
-        if (options.anchorPersistenceEnabled !== false && !captured.openCodeReviewReadFailed && !captured.promaReadFailed) {
+        if (options.anchorPersistenceEnabled !== false && !captured.openCodeReviewReadFailed && !captured.promaReadFailed && !captured.pagekinReadFailed) {
           try {
             fs.mkdirSync(path.dirname(anchorPath), { recursive: true });
             fs.writeFileSync(anchorPath, JSON.stringify({
@@ -3091,6 +3185,7 @@ function startCollector(options) {
               month: anchor.month,
               allTime: anchor.allTime,
               qoderCnPeriods: anchor.qoderCnPeriods,
+              pagekinRevision: anchor.pagekinRevision,
               openCodeReviewHistoryRevision: anchor.openCodeReviewHistoryRevision,
               ccSwitchAdmittedRows: anchor.ccSwitchAdmittedRows,
               ccSwitchTodayAdmitted: anchor.ccSwitchTodayAdmitted,
@@ -3165,7 +3260,7 @@ function startCollector(options) {
           durationMs: lastTickDurationMs
         });
       }
-      if (!anchored) setupWatchers();
+      if (!anchored || requestedTargetClients.includes('pagekin')) setupWatchers();
       if (Number.isFinite(tickOptions.activityRevision)) {
         collectedActivityRevision = Math.max(collectedActivityRevision, tickOptions.activityRevision);
         initialCollectionComplete = true;
@@ -3416,6 +3511,8 @@ function startCollector(options) {
       // the collector cannot re-trigger itself. See
       // SELF_WATCHED_SQLITE_SIDECAR_CLIENTS for the measured per-client evidence.
       if (isSelfWatchSqliteSidecarEvent(filePath, rootsByClient)) return;
+      if (path.basename(filePath) === `${PAGEKIN_DB}-shm`
+        && (rootsByClient.pagekin || []).includes(path.dirname(filePath))) return;
       activityRevision += 1;
       if (tickPending) {
         pendingActivityRevision = pendingActivityRevision === null
@@ -3519,6 +3616,7 @@ function startCollector(options) {
     if (stopped) return;
     stopped = true;
     runtimeAbortController.abort(new Error('collector stopped'));
+    pagekinState.rows = null;
     openCodeReviewState.snapshot = null;
     promaState.rows = null;
     if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }

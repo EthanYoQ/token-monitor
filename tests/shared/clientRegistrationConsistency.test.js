@@ -128,10 +128,13 @@ test('source markers declare each WSL path once and preserve discovery order', (
 
 test('discordRpc KNOWN_CLIENT_ASSETS and CLIENT_LABELS stay in sync with KNOWN_CLIENTS', () => {
   const { knownClientAssets, clientLabels } = loadDiscordRpcClientMaps();
+  // These clients use the default Rich Presence image until their artwork is
+  // uploaded to the Discord application.
+  const clientsWithoutDiscordAssets = new Set(['pagekin']);
 
   assert.deepEqual(
     [...knownClientAssets].filter((id) => knownClientIds.has(id)),
-    knownClientOrder,
+    knownClientOrder.filter((id) => !clientsWithoutDiscordAssets.has(id)),
     'tracked Discord assets should follow CLIENT_CATALOG display order'
   );
   assert.deepEqual(
@@ -154,9 +157,8 @@ test('discordRpc KNOWN_CLIENT_ASSETS and CLIENT_LABELS stay in sync with KNOWN_C
   const orphanedInLabels = Object.keys(clientLabels).filter((id) => !knownClientIds.has(id));
 
   assert.deepEqual(
-    missingFromAssets, [],
-    'KNOWN_CLIENTS ids missing from discordRpc.js KNOWN_CLIENT_ASSETS — Rich ' +
-    'Presence will show no icon for these clients when they are the top client today'
+    missingFromAssets, [...clientsWithoutDiscordAssets],
+    'Tracked clients without a registered Discord Rich Presence asset'
   );
   assert.deepEqual(
     missingFromLabels, [],

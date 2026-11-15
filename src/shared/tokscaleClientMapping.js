@@ -57,6 +57,7 @@ function tokscaleScanClientIds(client) {
 }
 
 function tokscaleCustomScanClientIds(client) {
+  if (client === 'pagekin') return [];
   return TOKSCALE_CLIENT_GROUPS[client]?.customScanIds || tokscaleScanClientIds(client);
 }
 

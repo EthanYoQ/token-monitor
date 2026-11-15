@@ -30,9 +30,9 @@ const UNSUPPORTED_CUSTOM_SCAN_CLIENTS = new Set([
   'cursor'
 ]);
 const CUSTOM_SCAN_CLIENT_IDS = Object.freeze(
-  CLIENT_IDS.filter((id) => !UNSUPPORTED_CUSTOM_SCAN_CLIENTS.has(id))
+  CLIENT_IDS.filter((id) => id === 'pagekin' || !UNSUPPORTED_CUSTOM_SCAN_CLIENTS.has(id))
 );
-const TOKSCALE_CLIENTS = new Set(CUSTOM_SCAN_CLIENT_IDS);
+const CUSTOM_SCAN_CLIENTS = new Set(CUSTOM_SCAN_CLIENT_IDS);
 // Paths are keyed by tracked-client id, so a persisted object written before an
 // id was renamed still carries the old key. The same aliases that migrate the
 // saved client selection fold those keys onto their current id here; without
@@ -52,7 +52,7 @@ function isAbsolutePath(value, platform = process.platform) {
 function validCustomScanPaths(value, options = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   const platform = options.platform || process.platform;
-  const allowedClients = options.allowedClients || TOKSCALE_CLIENTS;
+  const allowedClients = options.allowedClients || CUSTOM_SCAN_CLIENTS;
   const result = {};
   for (const client of CLIENT_IDS) {
     if (!allowedClients.has(client)) continue;
@@ -63,9 +63,9 @@ function validCustomScanPaths(value, options = {}) {
     for (const rawPath of rawPaths) {
       const dir = typeof rawPath === 'string' ? rawPath.trim() : '';
       if (!dir || dir.length > MAX_CUSTOM_SCAN_PATH_LENGTH || !isAbsolutePath(dir, platform)) continue;
+      if (dir.includes('\0') || /[\r\n]/.test(dir)) continue;
       // TOKSCALE_EXTRA_DIRS is comma-separated and has no escaping syntax.
-      // Reject values the bundled CLI could split into a different source.
-      if (dir.includes(',') || dir.includes('\0') || /[\r\n]/.test(dir)) continue;
+      if (dir.includes(',') && !LOCALLY_PARSED_CLIENT_IDS.includes(client)) continue;
       const key = platform === 'win32' ? dir.toLowerCase() : dir;
       if (seen.has(key)) continue;
       seen.add(key);
