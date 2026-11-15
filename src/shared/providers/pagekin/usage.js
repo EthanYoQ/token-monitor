@@ -8,6 +8,7 @@ const { localDayKey } = require('../../history');
 
 const CLIENT = 'pagekin';
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const PROJECT_INDEX = 'recent-projects.json';
 const PROJECT_DB = 'project.db';
 const FREEZE = 'portable-runtime-freeze.json';
 const AUTHORITY = 'portable-transfer-authority.json';
@@ -33,18 +34,33 @@ function sourceRoot({ homeDir = os.homedir(), env = process.env, platform = proc
 function pagekinSources(options = {}) {
   const root = sourceRoot(options);
   const receiptPath = path.join(root, '.migration', 'receipt.json');
-  if (options.metadataOnly) return { receiptPath, indexPath: null, databases: [] };
-  const receipt = readJson(receiptPath);
-  if (receipt !== undefined && (receipt?.version !== 1 || receipt.completed !== true || !UUID.test(receipt.generation || ''))) {
-    throw new Error('Invalid Pagekin data receipt');
+  let indexPath = null;
+  let projects = [];
+  let error;
+  try {
+    const receipt = readJson(receiptPath);
+    if (receipt !== undefined) {
+      if (receipt?.version !== 1 || receipt.completed !== true || !UUID.test(receipt.generation || '')) {
+        throw new Error('Invalid Pagekin data receipt');
+      }
+      indexPath = path.join(root, 'generations', receipt.generation, PROJECT_INDEX);
+      if (receipt.requiredObjects !== undefined && !Array.isArray(receipt.requiredObjects)) {
+        throw new Error('Invalid Pagekin data receipt');
+      }
+      const index = readJson(indexPath);
+      if (index === undefined && receipt.requiredObjects?.includes(PROJECT_INDEX)) {
+        throw new Error('Missing required Pagekin project index');
+      }
+      if (index !== undefined && !Array.isArray(index)) throw new Error('Invalid Pagekin project index');
+      projects = index ?? [];
+    }
+  } catch (cause) {
+    error = cause;
   }
-  const indexPath = receipt ? path.join(root, 'generations', receipt.generation, 'recent-projects.json') : null;
-  const projects = (indexPath ? readJson(indexPath) : undefined) ?? [];
-  if (!Array.isArray(projects)) throw new Error('Invalid Pagekin project index');
   const paths = [...projects.map((project) => project?.path), ...(options.projectPaths || [])];
   const databases = [...new Set(paths.filter((project) => typeof project === 'string' && path.isAbsolute(project))
     .map((project) => path.join(project, '.ai-novel', PROJECT_DB)))];
-  return { receiptPath, indexPath, databases };
+  return { receiptPath, indexPath, databases, error };
 }
 
 function portableAttempts(directory) {
@@ -79,8 +95,10 @@ const ATTEMPT_ROWS = `
 `;
 
 function collectPagekinRows(options) {
+  const { databases, error } = pagekinSources(options);
+  if (error) throw error;
   const unique = new Map();
-  for (const database of pagekinSources(options).databases) {
+  for (const database of databases) {
     let info;
     try { info = fs.statSync(database); } catch (error) {
       if (error.code === 'ENOENT') continue;

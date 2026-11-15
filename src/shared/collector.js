@@ -1287,7 +1287,7 @@ async function collectUsageOnce(options) {
         if (options.pagekinState) options.pagekinState.rows = rows;
       } catch (_) {
         pagekinReadFailed = true;
-        rows = options.pagekinState?.rows;
+        rows = options.pagekinState?.rows ?? pagekinRowsFromAnchor(options.pagekinFallbackAnchor || anchor, pagekinToday);
         try { options.logger?.('pagekin usage read failed'); } catch (_) {}
       }
       if (!pagekinReadFailed) {
@@ -1470,7 +1470,7 @@ async function collectUsageOnce(options) {
         // partition into an empty one or subtract it from month/allTime.
         freshPartitions.qodercn = anchor.todayPartitions.qodercn;
       }
-      if (pagekinReadFailed && anchor.todayPartitions?.pagekin) {
+      if (pagekinReadFailed && !pagekinPeriods && anchor.todayPartitions?.pagekin) {
         freshPartitions.pagekin = anchor.todayPartitions.pagekin;
       }
       if (openCodeReviewReadFailed && anchor.todayPartitions?.['open-code-review']) {
@@ -2562,6 +2562,25 @@ function mergeTodayPartitions(partitions) {
   return mergePeriods(...Object.values(partitions || {}));
 }
 
+function pagekinRowsFromAnchor(anchor, todayKey) {
+  if (anchor?.dateKey !== todayKey) return undefined;
+  const rows = new Map();
+  for (const period of [anchor.today, anchor.month, anchor.allTime]) {
+    let tokens = 0;
+    for (const key in period?.sessions || {}) {
+      if (!key.startsWith('pagekin:')) continue;
+      const { sessionId, startedAt, models, totalTokens, inputTokens, outputTokens } = period.sessions[key] || {};
+      const model = Object.keys(models || {})[0];
+      const createdAt = Date.parse(startedAt);
+      if (!sessionId || !model || !Number.isFinite(createdAt) || totalTokens !== inputTokens + outputTokens) return undefined;
+      rows.set(sessionId, { sessionId, createdAt, model, totalTokens, input: inputTokens, output: outputTokens });
+      tokens += totalTokens;
+    }
+    if (tokens !== (period?.clients?.pagekin || 0)) return undefined;
+  }
+  return [...rows.values()];
+}
+
 function periodHasUsage(period) {
   if (!period) return false;
   return Number(period.totalTokens || 0) > 0
@@ -2623,7 +2642,11 @@ function qoderCnProjectsDirForClients(clientsCsv, options = {}) {
 // a seed has nothing to stand on and declines.
 function collectorAnchorTrust(saved, options = {}) {
   const { clients = '', allTimeSince = '', projectsEnabled = true, qoderCnDbPath = '', qoderCnProjectsDir = '', customScanPaths = null, ccSwitchClaudeEnabled = false, ccSwitchDbPath = '', now = new Date() } = options;
-  if (!saved || saved.dateKey !== localTodayKey(now)) return null;
+  if (!saved) return null;
+  const todayKey = localTodayKey(now);
+  const pastDateAllowed = options.allowPastDate === true
+    && /^\d{4}-\d{2}-\d{2}$/.test(saved.dateKey) && saved.dateKey < todayKey;
+  if (saved.dateKey !== todayKey && !pastDateAllowed) return null;
   if (!saved.today || !saved.month || !saved.allTime) return null;
   // Old Cursor anchors preserve `default` in their broad-period model maps;
   // applying a new `cursor-auto` Today delta to them would split one mode.
@@ -2912,7 +2935,7 @@ function startCollector(options) {
   if (options.anchorPersistenceEnabled !== false) {
     try {
       const saved = readJson(anchorPath, null);
-      const trust = collectorAnchorTrust(saved, {
+      const trustOptions = {
         clients,
         allTimeSince,
         projectsEnabled: options.projectsEnabled,
@@ -2921,7 +2944,12 @@ function startCollector(options) {
         customScanPaths: options.customScanPaths,
         ccSwitchClaudeEnabled: options.ccSwitchClaudeEnabled === true,
         ccSwitchDbPath: options.ccSwitchDbPath
-      });
+      };
+      const trust = collectorAnchorTrust(saved, trustOptions);
+      if (!trust && clients.split(',').includes('pagekin')
+        && collectorAnchorTrust(saved, { ...trustOptions, allowPastDate: true })?.capturedAtMs != null) {
+        pagekinState.rows = pagekinRowsFromAnchor(saved, saved.dateKey);
+      }
       if (trust) {
         anchor = {
           dateKey: saved.dateKey,
@@ -3060,6 +3088,7 @@ function startCollector(options) {
         qoderCnHistoryFallbackGraph: qoderCnHistoryGraph,
         qoderCnReadState,
         pagekinState,
+        pagekinFallbackAnchor: anchor,
         openCodeReviewState,
         promaState,
         onAnchorComputed: (x) => { captured = x; },

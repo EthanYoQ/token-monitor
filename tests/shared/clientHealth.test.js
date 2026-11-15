@@ -312,6 +312,10 @@ test('every source-root id the collector emits is in the allowlist', () => {
     customScanPaths: { codex: [path.resolve('tmp', 'codex-extra')] },
     platform: 'win32', ccSwitchClaudeEnabled: true
   });
+  roots.pagekin = clientSourceRoots('pagekin', {
+    env: { AI_NOVEL_APP_DATA_HOME: path.resolve('tmp', 'pagekin-data') },
+    customScanPaths: { pagekin: [path.resolve('tmp', 'pagekin-project')] }
+  }).pagekin;
   const emitted = new Set();
   for (const entries of Object.values(roots)) {
     for (const { id, dir } of entries) {

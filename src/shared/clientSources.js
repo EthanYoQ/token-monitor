@@ -359,9 +359,7 @@ function clientSourceRoots(clientsCsv, options = {}) {
   add('proma', ['proma-sessions', path.join(home, '.proma', 'agent-sessions')]);
   if (enabled.has('pagekin')) {
     const projectPaths = normalizeCustomScanPaths(options.customScanPaths, { platform }).pagekin;
-    const pagekinOptions = { env, platform, homeDir: home, projectPaths };
-    let pagekin;
-    try { pagekin = pagekinSources(pagekinOptions); } catch (_) { pagekin = pagekinSources({ ...pagekinOptions, metadataOnly: true }); }
+    const pagekin = pagekinSources({ env, platform, homeDir: home, projectPaths });
     add('pagekin',
       ...[pagekin.receiptPath, pagekin.indexPath].filter(Boolean).map((file) => ['pagekin-index', path.dirname(file), file]),
       ...pagekin.databases.map((file) => ['pagekin-db', path.dirname(file), file])

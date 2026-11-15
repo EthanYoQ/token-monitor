@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { test } = require('node:test');
-const { collectUsageOnce, watchIgnoreMatcher, watchAttributionRootsForClients } = require('../../src/shared/collector');
+const { collectUsageOnce, configFingerprint, startCollector, watchIgnoreMatcher, watchAttributionRootsForClients } = require('../../src/shared/collector');
 const { tokscaleExtraDirsEnv } = require('../../src/shared/customScanPaths');
 const { collectPagekinRows } = require('../../src/shared/providers/pagekin/usage');
 
@@ -78,7 +78,7 @@ function fixture(t) {
 
 test('Pagekin contributes one native receipt per attempt and uses one source for periods and graph', async (t) => {
   const { env, root, native } = fixture(t);
-  const additional = path.join(root, 'additional');
+  const additional = path.join(root, 'additional, local');
   const additionalDb = createProject(additional);
   insert(additionalDb, 6, october, 40);
   additionalDb.close();
@@ -143,6 +143,46 @@ test('Pagekin watch paths include SQLite WAL and skip Pagekin-owned non-source f
   assert.ok(!paths.includes(db + '-shm'));
 });
 
+test('Pagekin accepts an empty migration without an index and rejects a missing required index', (t) => {
+  const { env, root } = fixture(t);
+  const receiptPath = path.join(root, '.migration', 'receipt.json');
+  const indexPath = path.join(root, 'generations', generation, 'recent-projects.json');
+  const receipt = { version: 1, generation, completed: true };
+  fs.unlinkSync(indexPath);
+  fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, requiredObjects: [] }));
+  assert.deepEqual(collectPagekinRows({ env }), []);
+  fs.writeFileSync(receiptPath, JSON.stringify({ ...receipt, requiredObjects: ['recent-projects.json'] }));
+  assert.throws(() => collectPagekinRows({ env }), /Missing required Pagekin project index/);
+  fs.writeFileSync(indexPath, '[]');
+  assert.deepEqual(collectPagekinRows({ env }), []);
+});
+
+test('Pagekin keeps index and configured database watch paths through a failed index read', async (t) => {
+  const { env, root, native } = fixture(t);
+  const options = {
+    clients: 'pagekin', now, allTimeSince: '2026-10-01', env, pagekinState: {}, wslScanEnabled: false,
+    customScanPaths: { pagekin: [native] }
+  };
+  const indexPath = path.join(root, 'generations', generation, 'recent-projects.json');
+  const original = fs.readFileSync(indexPath, 'utf8');
+  fs.writeFileSync(path.join(root, '.migration', 'receipt.json'), JSON.stringify({
+    version: 1, generation, completed: true, requiredObjects: ['recent-projects.json']
+  }));
+  const baseline = await collectUsageOnce(options);
+  fs.unlinkSync(indexPath);
+  const missing = await collectUsageOnce(options);
+  assert.equal(missing.clientHealth.clients.pagekin.collection.state, 'failed');
+  assert.equal(missing.allTime.totalTokens, baseline.allTime.totalTokens);
+  fs.writeFileSync(indexPath, '{');
+  const paths = watchAttributionRootsForClients('pagekin', null, options).pagekin;
+  assert.ok(paths.includes(indexPath));
+  assert.ok(paths.includes(path.join(native, '.ai-novel', 'project.db-wal')));
+  fs.writeFileSync(indexPath, original);
+  const recovered = await collectUsageOnce(options);
+  assert.equal(recovered.clientHealth.clients.pagekin.overall, 'healthy');
+  assert.equal(recovered.allTime.totalTokens, baseline.allTime.totalTokens);
+});
+
 test('a missing Pagekin transfer freeze fails closed and keeps the last readable usage', async (t) => {
   const { env, native } = fixture(t);
   const options = { clients: 'pagekin', now, allTimeSince: '2026-10-01', env, pagekinState: {}, wslScanEnabled: false };
@@ -152,4 +192,68 @@ test('a missing Pagekin transfer freeze fails closed and keeps the last readable
   const retained = await collectUsageOnce(options);
   assert.equal(retained.allTime.totalTokens, baseline.allTime.totalTokens);
   assert.equal(retained.clientHealth.clients.pagekin.collection.state, 'failed');
+});
+
+test('Pagekin keeps its three period totals on a failed cold-start read while other clients update', async (t) => {
+  const { env, native, nativeDb } = fixture(t);
+  let capture;
+  let claudeTokens = 7;
+  const options = {
+    clients: 'pagekin,claude', now, allTimeSince: '2026-10-01', env, wslScanEnabled: false,
+    onAnchorComputed: (result) => { capture = result; },
+    runTokscale: async () => ({ entries: [{ client: 'claude', model, input: claudeTokens }] })
+  };
+  await collectUsageOnce(options);
+  const anchor = {
+    ...capture.windowsPeriods, dateKey: '2026-11-15', pagekinRevision: capture.pagekinRevision, todayPartitions: null
+  };
+  const authority = path.join(native, '.ai-novel', 'portable-transfer-authority.json');
+  fs.writeFileSync(authority, '{}');
+  claudeTokens = 17;
+  for (const key of ['todayOnlyAnchor', 'pagekinFallbackAnchor']) {
+    const failed = await collectUsageOnce({ ...options, [key]: anchor, pagekinState: {} });
+    assert.equal(failed.clientHealth.clients.pagekin.collection.state, 'failed');
+    for (const [period, pagekin] of [['today', 100], ['month', 220], ['allTime', 420]]) {
+      assert.deepEqual(failed[period].clients, { pagekin, claude: 17 }, `${key} ${period}`);
+    }
+  }
+  fs.unlinkSync(authority);
+  insert(nativeDb, 6, today, 40);
+  const recovered = await collectUsageOnce({ ...options, todayOnlyAnchor: anchor, pagekinState: {} });
+  assert.equal(recovered.clientHealth.clients.pagekin.overall, 'healthy');
+  for (const [period, pagekin] of [['today', 140], ['month', 260], ['allTime', 460]]) {
+    assert.deepEqual(recovered[period].clients, { pagekin, claude: 17 });
+  }
+});
+
+test('Pagekin reuses historical receipts from a persisted snapshot after midnight if the source cannot be read', async (t) => {
+  const { env, native, root } = fixture(t);
+  const clients = 'pagekin';
+  const allTimeSince = '2026-10-01';
+  const options = { clients, allTimeSince, env, wslScanEnabled: false, historyEnabled: false, watchEnabled: false, limitsEnabled: false };
+  let snapshot;
+  await collectUsageOnce({ ...options, now, onAnchorComputed: (result) => { snapshot = result; } });
+  fs.writeFileSync(path.join(root, 'collector-anchor.json'), JSON.stringify({
+    ...snapshot.windowsPeriods,
+    dateKey: '2026-11-15',
+    fullScanAt: now.toISOString(),
+    configFingerprint: configFingerprint(clients, allTimeSince)
+  }));
+  fs.writeFileSync(path.join(native, '.ai-novel', 'portable-transfer-authority.json'), '{}');
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(2026, 10, 16, 9) });
+  const original = process.env.TOKEN_MONITOR_SHARED_DIR;
+  process.env.TOKEN_MONITOR_SHARED_DIR = root;
+  t.after(() => {
+    if (original === undefined) delete process.env.TOKEN_MONITOR_SHARED_DIR;
+    else process.env.TOKEN_MONITOR_SHARED_DIR = original;
+  });
+  let collector;
+  const summary = await new Promise((resolve) => {
+    collector = startCollector({ ...options, intervalMs: 60_000, onUpdate: resolve });
+    t.after(() => collector.stop());
+  });
+  assert.equal(summary.clientHealth.clients.pagekin.collection.state, 'failed');
+  assert.equal(summary.today.totalTokens, 0);
+  assert.equal(summary.month.clients.pagekin, 220);
+  assert.equal(summary.allTime.clients.pagekin, 420);
 });
