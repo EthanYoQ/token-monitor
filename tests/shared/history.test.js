@@ -43,6 +43,9 @@ test('sumTokens adds disjoint Tokscale reasoning only for opted-in clients', () 
   assert.equal(sumTokens(b, 'reasonix'), 1134);
   assert.equal(sumTokens(b, 'zcode'), 1134);
   assert.equal(sumTokens(b, 'opencode'), 1134);
+  assert.equal(sumTokens(b, 'antigravity-cli'), 1134);
+  assert.equal(sumTokens(b, 'antigravity-extension'), 1134);
+  assert.equal(sumTokens(b, 'antigravity'), 135);
   assert.equal(sumTokens(b, 'claude'), 135);
   assert.equal(sumTokens({}), 0);
   assert.equal(sumTokens(null), 0);
@@ -53,6 +56,9 @@ test('sumOutputTokens folds disjoint reasoning into output only for opted-in cli
   assert.equal(sumOutputTokens(b), 20);
   assert.equal(sumOutputTokens(b, 'zcode'), 1019);
   assert.equal(sumOutputTokens(b, 'opencode'), 1019);
+  assert.equal(sumOutputTokens(b, 'antigravity-cli'), 1019);
+  assert.equal(sumOutputTokens(b, 'antigravity-extension'), 1019);
+  assert.equal(sumOutputTokens(b, 'antigravity'), 20);
   assert.equal(sumOutputTokens(b, 'claude'), 20);
 });
 
@@ -206,17 +212,17 @@ test('parseGraphResult folds Antigravity CLI and extension graph rows into the t
       clients: [
         {
           client: 'antigravity', modelId: 'gemini-3.8-flash',
-          tokens: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+          tokens: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, reasoning: 4 },
           cost: 1, messages: 1
         },
         {
           client: 'antigravity-cli', modelId: 'gemini-3.8-flash',
-          tokens: { input: 20, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+          tokens: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 3 },
           cost: 2, messages: 1
         },
         {
           client: 'antigravity-extension', modelId: 'gemini-3.8-flash',
-          tokens: { input: 30, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
+          tokens: { input: 30, output: 2, cacheRead: 0, cacheWrite: 0, reasoning: 6 },
           cost: 3, messages: 1
         }
       ]
@@ -224,8 +230,12 @@ test('parseGraphResult folds Antigravity CLI and extension graph rows into the t
   });
 
   assert.deepEqual(contributions[0].perClient, {
-    antigravity: { tokens: 60, cost: 6, messages: 3, unclassifiedTokens: 0 }
+    antigravity: { tokens: 86, cost: 6, messages: 3, outputTokens: 26, unclassifiedTokens: 0 }
   });
+  assert.equal(contributions[0].tokens, 86);
+  assert.equal(contributions[0].outputTokens, 26);
+  assert.equal(contributions[0].perModel['gemini-3.8-flash'].tokens, 86);
+  assert.equal(contributions[0].perModel['gemini-3.8-flash'].outputTokens, 26);
   assert.equal(Object.hasOwn(contributions[0].perClient, 'antigravity-cli'), false);
   assert.equal(Object.hasOwn(contributions[0].perClient, 'antigravity-extension'), false);
 });

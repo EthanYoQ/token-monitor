@@ -834,6 +834,44 @@ test('extractUsageFromTokscale normalizes Antigravity client names', () => {
   assert.equal(period.clientCosts.antigravity, 0.125);
 });
 
+for (const [source, totalTokens, outputTokens] of [
+  ['antigravity-cli', 200, 60],
+  ['antigravity-extension', 200, 60],
+  ['antigravity', 160, 20]
+]) {
+  test(`Antigravity usage preserves the ${source} reasoning contract before grouping`, () => {
+    const row = {
+      client: source, model: 'argon', sessionId: 'session-argon',
+      input: 100, output: 20, cacheRead: 30, cacheWrite: 10, reasoning: 40,
+      cost: 0.5, messages: 1
+    };
+    const { period, byClient } = extractUsageBundleFromTokscale({ data: [row] });
+    assert.deepEqual(period, extractUsageFromTokscale({ data: [row] }));
+    assert.deepEqual(Object.keys(byClient), ['antigravity']);
+    assert.deepEqual(byClient.antigravity, period);
+    assert.equal(period.totalTokens, totalTokens);
+    assert.equal(period.outputTokens, outputTokens);
+    assert.deepEqual(period.clients, { antigravity: totalTokens });
+    assert.deepEqual(period.models, { argon: totalTokens });
+    assert.equal(period.clientOutputs.antigravity, outputTokens);
+    assert.equal(period.modelOutputs.argon, outputTokens);
+    const session = period.sessions['antigravity:session-argon'];
+    assert.equal(session.totalTokens, totalTokens);
+    assert.equal(session.outputTokens, outputTokens);
+    assert.equal(session.reasoningTokens, 40);
+    assert.equal(extractUsageFromTokscale([{ ...row, totalTokens }]).totalTokens, totalTokens);
+  });
+}
+
+test('Antigravity reasoning-only source rows remain visible in usage and sessions', () => {
+  const period = extractUsageFromTokscale([{
+    client: 'antigravity-extension', model: 'argon', sessionId: 'thinking', reasoning: 40
+  }]);
+  assert.equal(period.totalTokens, 40);
+  assert.equal(period.outputTokens, 40);
+  assert.equal(period.sessions['antigravity:thinking'].totalTokens, 40);
+});
+
 test('extractUsageFromTokscale normalizes Kimi, Qwen, and Grok Build client names', () => {
   const period = extractUsageFromTokscale([
     { client: 'Kimi CLI', model: 'kimi-code/kimi-for-coding', totalTokens: 11 },

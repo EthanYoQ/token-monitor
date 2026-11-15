@@ -88,7 +88,12 @@ function normalizeTimeMetrics(value) {
 // uses the same reasoning-inclusive public output convention as usage.js.
 // zcode/opencode: tokscale subtracts the reasoning overlap out of `output`
 // (their source DBs are reasoning-inclusive), so it has to be added back here.
-const TOKSCALE_DISJOINT_REASONING_CLIENTS = new Set([REASONIX_CLIENT, 'codex', 'droid', 'dsh', 'zcode', 'opencode']);
+// Antigravity database sources are disjoint; its RPC cache output already
+// includes reasoning. Check the source id before folding its aliases.
+const TOKSCALE_DISJOINT_REASONING_CLIENTS = new Set([
+  REASONIX_CLIENT, 'codex', 'droid', 'dsh', 'zcode', 'opencode',
+  'antigravity-cli', 'antigravity-extension'
+]);
 
 function hasDisjointReasoning(client) {
   return TOKSCALE_DISJOINT_REASONING_CLIENTS.has(String(client).trim().toLowerCase());
@@ -164,11 +169,11 @@ function parseGraphResult(raw) {
       if (!c || typeof c !== 'object') continue;
       const client = normalizeTokscaleClientName(c.client) || 'unknown';
       const model = normalizeTokscaleModelNameForClient(c.modelId || c.model || c.model_id || 'unknown', client);
-      const t = sumTokens(c.tokens, client);
+      const t = sumTokens(c.tokens, c.client);
       const cst = num(c.cost);
       const cacheRead = num(c.tokens?.cacheRead ?? c.tokens?.cache_read);
       const cacheWrite = num(c.tokens?.cacheWrite ?? c.tokens?.cache_write);
-      const output = sumOutputTokens(c.tokens, client);
+      const output = sumOutputTokens(c.tokens, c.client);
       const componentsAvailable = c.tokenComponentsAvailable !== false;
       const hasExplicitUnclassified = Object.prototype.hasOwnProperty.call(c, 'unclassifiedTokens')
         || Object.prototype.hasOwnProperty.call(c, 'unclassified_tokens');

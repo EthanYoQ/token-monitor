@@ -2650,7 +2650,9 @@ function collectorAnchorTrust(saved, options = {}) {
   if (!saved.today || !saved.month || !saved.allTime) return null;
   // Old Cursor anchors preserve `default` in their broad-period model maps;
   // applying a new `cursor-auto` Today delta to them would split one mode.
-  if (normalizeClientsCsv(clients).split(',').includes('cursor') && saved.cursorAutoModelVersion !== 1) return null;
+  const trackedClients = normalizeClientsCsv(clients).split(',');
+  if (trackedClients.includes('cursor') && saved.cursorAutoModelVersion !== 1) return null;
+  if (trackedClients.includes('antigravity') && saved.antigravityNativeReasoningVersion !== 1) return null;
   if (saved.configFingerprint !== configFingerprint(clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled, ccSwitchDbPath)) return null;
   const parsed = Date.parse(saved.fullScanAt || '');
   const capturedAtMs = Number.isFinite(parsed) && parsed <= now.getTime() ? parsed : null;
@@ -3181,6 +3183,7 @@ function startCollector(options) {
             fs.writeFileSync(anchorPath, JSON.stringify({
               dateKey: anchor.dateKey,
               cursorAutoModelVersion: 1,
+              antigravityNativeReasoningVersion: 1,
               today: anchor.today,
               month: anchor.month,
               allTime: anchor.allTime,

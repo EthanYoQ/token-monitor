@@ -257,12 +257,12 @@ function observationsFromGraphs(graphs, options = {}) {
         const candidate = normalizeObservation({
           ...raw,
           client,
-          tokens: sumTokens(raw?.tokens, client),
+          tokens: sumTokens(raw?.tokens, raw?.client),
           reasoningTokens: raw?.tokens?.reasoning,
           tokenComponentsAvailable: raw?.tokenComponentsAvailable !== false,
           cacheReadTokens: raw?.tokens?.cacheRead ?? raw?.tokens?.cache_read,
           cacheWriteTokens: raw?.tokens?.cacheWrite ?? raw?.tokens?.cache_write,
-          outputTokens: sumOutputTokens(raw?.tokens, client)
+          outputTokens: sumOutputTokens(raw?.tokens, raw?.client)
         });
         if (!candidate) continue;
         const key = observationKey(candidate);

@@ -711,3 +711,16 @@ test('Cursor anchors from before the Auto model rename require a full scan', () 
   assert.equal(collectorAnchorTrust(anchor, options), null);
   assert.equal(collectorAnchorTrust({ ...anchor, cursorAutoModelVersion: 1 }, options).capturedAtMs, now.getTime() - 60_000);
 });
+
+test('Antigravity anchors from before native reasoning accounting require a full scan', () => {
+  const { collectorAnchorTrust, configFingerprint } = freshCollector();
+  const now = new Date(2026, 10, 15, 22);
+  const options = { clients: 'antigravity', allTimeSince: '2024-01-01', now };
+  const anchor = {
+    dateKey: '2026-11-15', today: {}, month: {}, allTime: {},
+    configFingerprint: configFingerprint(options.clients, options.allTimeSince),
+    fullScanAt: new Date(now.getTime() - 60_000).toISOString()
+  };
+  assert.equal(collectorAnchorTrust(anchor, options), null);
+  assert.equal(collectorAnchorTrust({ ...anchor, antigravityNativeReasoningVersion: 1 }, options).capturedAtMs, now.getTime() - 60_000);
+});
