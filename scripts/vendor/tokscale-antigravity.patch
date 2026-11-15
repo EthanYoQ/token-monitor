@@ -1,0 +1,210 @@
+--- a/crates/tokscale-core/src/sessions/antigravity_cli.rs
++++ b/crates/tokscale-core/src/sessions/antigravity_cli.rs
+@@ -13,7 +13,7 @@
+ //! the proto→JSON conversion), so this module ships a tiny wire-format reader
+ //! and pulls only the few fields it needs. The field numbers below were
+ //! reverse-engineered from real databases and cross-checked across 6 sessions
+-//! / 140 turns (`#9 + #10 == #3`, i.e. output + thinking == total output;
++//! / 140 turns (`#9 + #10 == #3`, i.e. thinking + response == total output;
+ //! `#5`/cacheRead only appears once a cached prefix exists and grows with the
+ //! conversation):
+ //!
+@@ -40,11 +40,13 @@
+ //!       cuts that by orders of magnitude, because a turn cannot happen before
+ //!       the conversation it belongs to nor after the moment we read the file.
+ //!   - `#4`                      → usage message
+-//!     - `#1` (varint, const)    → fixed system-prompt tokens (≈1132)
++//!     - `#1` (varint)           → model enum
+ //!     - `#2` (varint)           → newly-processed (non-cached) input tokens
++//!     - `#3` (varint)           → total output tokens
++//!     - `#4` (varint)           → cacheWrite tokens
+ //!     - `#5` (varint)           → cacheRead tokens
+-//!     - `#9` (varint)           → output (text) tokens
+-//!     - `#10` (varint)          → thinking / reasoning tokens
++//!     - `#9` (varint)           → thinking / reasoning tokens
++//!     - `#10` (varint)          → visible response output tokens
+ //!     - `#11` (string)          → responseId (dedup key)
+ //! - `trajectory_metadata_blob.#2` = `{#1: seconds, #2: nanos}` → created-at
+ //! - `trajectory_metadata_blob.#1.#1` (string)                  → workspace URI
+@@ -68,7 +70,7 @@
+
+ /// Bump when parsing behavior for Antigravity generation databases changes.
+ /// The CLI and IDE extension clients share this parser and cache generation.
+-pub const ANTIGRAVITY_DB_PARSER_BASE_VERSION: u32 = 1;
++pub const ANTIGRAVITY_DB_PARSER_BASE_VERSION: u32 = 2;
+
+ /// Parse an Antigravity CLI conversation database.
+ pub fn parse_antigravity_cli_file(path: &Path) -> Vec<UnifiedMessage> {
+@@ -309,20 +311,19 @@
+     let chat_model = message_field(blob, 1)?;
+     let usage = message_field(chat_model, 4)?;
+
+-    // input = fixed system prompt (#1) + newly-processed input (#2). The
+-    // constant #1 is, to the best of our reverse-engineering, the agent's fixed
+-    // system prompt and counts as billable input; if an official schema later
+-    // contradicts this, only the input total needs revisiting.
+-    // Clamp untrusted u64 varints into i64 (a corrupt/malicious blob could
+-    // encode a value > i64::MAX, which `as i64` would wrap to a negative count)
+-    // and combine with saturating_add so totals never overflow.
+     let to_i64 = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
+-    let input = to_i64(varint_field(usage, 1).unwrap_or(0))
+-        .saturating_add(to_i64(varint_field(usage, 2).unwrap_or(0)));
++    let input = to_i64(varint_field(usage, 2).unwrap_or(0));
++    let total_output = to_i64(varint_field(usage, 3).unwrap_or(0));
++    let cache_write = to_i64(varint_field(usage, 4).unwrap_or(0));
+     let cache_read = to_i64(varint_field(usage, 5).unwrap_or(0));
+-    let output = to_i64(varint_field(usage, 9).unwrap_or(0));
+-    let reasoning = to_i64(varint_field(usage, 10).unwrap_or(0));
+-    if input == 0 && output == 0 && cache_read == 0 && reasoning == 0 {
++    let reasoning = to_i64(varint_field(usage, 9).unwrap_or(0));
++    let response_output = to_i64(varint_field(usage, 10).unwrap_or(0));
++    let output = if response_output > 0 {
++        response_output
++    } else {
++        (total_output - reasoning).max(0)
++    };
++    if input == 0 && output == 0 && cache_read == 0 && cache_write == 0 && reasoning == 0 {
+         return None;
+     }
+
+@@ -381,7 +382,7 @@
+             input,
+             output,
+             cache_read,
+-            cache_write: 0,
++            cache_write,
+             reasoning,
+         },
+         0.0,
+@@ -1055,7 +1056,7 @@
+     fn build_row_with_gen9(gen9: &[u8], response_id: &str) -> Vec<u8> {
+         let mut usage = Vec::new();
+         usage.extend(enc_varint(2, 500)); // input
+-        usage.extend(enc_varint(9, 300)); // output
++        usage.extend(enc_varint(10, 300)); // output
+         usage.extend(enc_len(11, response_id.as_bytes())); // responseId
+
+         let mut chat_model = Vec::new();
+@@ -1127,11 +1128,11 @@
+     fn build_row(model: Option<&str>, display: Option<&str>, response_id: &str) -> Vec<u8> {
+         // usage message (#4 of chatModel)
+         let mut usage = Vec::new();
+-        usage.extend(enc_varint(1, 1132)); // fixed system prompt
++        usage.extend(enc_varint(1, 1132)); // model enum
+         usage.extend(enc_varint(2, 500)); // new input
+         usage.extend(enc_varint(5, 16000)); // cacheRead
+-        usage.extend(enc_varint(9, 300)); // output
+-        usage.extend(enc_varint(10, 40)); // thinking
++        usage.extend(enc_varint(10, 300)); // output
++        usage.extend(enc_varint(9, 40)); // thinking
+         usage.extend(enc_len(11, response_id.as_bytes())); // responseId
+
+         // chatModel message (#1 of gen_metadata)
+@@ -1180,9 +1181,8 @@
+         // A corrupt/malicious blob encoding a varint > i64::MAX must clamp to a
+         // non-negative i64 (saturating), never wrap `as i64` to a negative count.
+         let mut usage = Vec::new();
+-        usage.extend(enc_varint(1, u64::MAX)); // huge fixed system prompt
+-        usage.extend(enc_varint(2, 10)); // + small input -> saturating_add
+-        usage.extend(enc_varint(9, u64::MAX)); // huge output
++        usage.extend(enc_varint(2, u64::MAX));
++        usage.extend(enc_varint(10, u64::MAX));
+         usage.extend(enc_len(11, b"resp-overflow"));
+         let mut chat_model = Vec::new();
+         chat_model.extend(enc_len(4, &usage));
+@@ -1192,7 +1192,7 @@
+         let mut seen = HashSet::new();
+         let msg = parse_isolated_row(&blob, "s", 1_000, &mut seen).expect("parses");
+         assert_eq!(msg.tokens.output, i64::MAX);
+-        assert_eq!(msg.tokens.input, i64::MAX); // saturating_add, not negative
++        assert_eq!(msg.tokens.input, i64::MAX);
+         assert!(msg.tokens.input >= 0 && msg.tokens.output >= 0);
+     }
+
+@@ -1232,7 +1232,7 @@
+         assert_eq!(message.model_id, "gemini-3.5-flash-high");
+         assert_eq!(message.provider_id, "google");
+         assert_eq!(message.session_id, "session-test");
+-        assert_eq!(message.tokens.input, 1632); // 1132 + 500
++        assert_eq!(message.tokens.input, 500);
+         assert_eq!(message.tokens.cache_read, 16000);
+         assert_eq!(message.tokens.output, 300);
+         assert_eq!(message.tokens.reasoning, 40);
+@@ -1257,7 +1257,7 @@
+         assert_eq!(messages[0].client, "antigravity-extension");
+         assert_eq!(messages[0].session_id, "extension-conversation");
+         assert_eq!(messages[0].dedup_key.as_deref(), Some("resp-1"));
+-        assert_eq!(messages[0].tokens.input, 1632);
++        assert_eq!(messages[0].tokens.input, 500);
+     }
+
+     #[test]
+@@ -1519,7 +1519,7 @@
+
+         let mut usage = Vec::new();
+         usage.extend(enc_varint(2, 500)); // input
+-        usage.extend(enc_varint(9, 300)); // output
++        usage.extend(enc_varint(10, 300)); // output
+         usage.extend(enc_len(11, b"with-time")); // responseId
+
+         // #9 wraps a sub-message whose #4 is the {seconds, nanos} Timestamp.
+@@ -2346,21 +2346,18 @@
+     }
+
+     #[test]
+-    fn output_and_thinking_map_to_fields_9_and_10() {
+-        // Lock the field-mapping contract asserted by the module doc-comment:
+-        // `#9 + #10 == #3` (output + thinking == stored total output). Build a
+-        // synthetic blob where #9=output, #10=thinking, #3=output+thinking and
+-        // verify the parsed message keeps #9 as output and #10 as reasoning.
++    fn thinking_and_response_map_to_fields_9_and_10() {
+         let output = 300u64;
+         let thinking = 40u64;
+         let total_output = output + thinking; // #3
+
+         let mut usage = Vec::new();
+-        usage.extend(enc_varint(1, 1132)); // fixed system prompt
++        usage.extend(enc_varint(1, 1132)); // model enum
+         usage.extend(enc_varint(2, 500)); // new input
+         usage.extend(enc_varint(3, total_output)); // stored total output (#3)
+-        usage.extend(enc_varint(9, output)); // output (#9)
+-        usage.extend(enc_varint(10, thinking)); // thinking (#10)
++        usage.extend(enc_varint(4, 15)); // cache write
++        usage.extend(enc_varint(9, thinking));
++        usage.extend(enc_varint(10, output));
+         usage.extend(enc_len(11, b"invariant-1"));
+
+         let mut chat_model = Vec::new();
+@@ -2370,13 +2367,23 @@
+
+         let mut seen = HashSet::new();
+         let message = parse_isolated_row(&blob, "session", 0, &mut seen).unwrap();
++        assert_eq!(message.tokens.input, 500);
+         assert_eq!(message.tokens.output, output as i64);
++        assert_eq!(message.tokens.cache_write, 15);
+         assert_eq!(message.tokens.reasoning, thinking as i64);
+         // The contract: the two component fields sum to the stored total.
+         assert_eq!(
+             (message.tokens.output + message.tokens.reasoning) as u64,
+             total_output
+         );
++    }
++
++    #[test]
++    fn model_enum_alone_is_not_usage() {
++        let usage = enc_varint(1, 1417);
++        let blob = enc_len(1, &enc_len(4, &usage));
++        let mut seen = HashSet::new();
++        assert!(parse_isolated_row(&blob, "session", 0, &mut seen).is_none());
+     }
+
+     #[test]
+@@ -2460,7 +2467,7 @@
+         let session_fallback = 222_000_i64;
+         let mut usage = Vec::new();
+         usage.extend(enc_varint(2, 500)); // input
+-        usage.extend(enc_varint(9, 300)); // output
++        usage.extend(enc_varint(10, 300)); // output
+         usage.extend(enc_len(11, b"bad-nanos")); // responseId
+
+         let mut gen_time = Vec::new();

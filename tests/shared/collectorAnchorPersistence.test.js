@@ -711,3 +711,28 @@ test('Cursor anchors from before the Auto model rename require a full scan', () 
   assert.equal(collectorAnchorTrust(anchor, options), null);
   assert.equal(collectorAnchorTrust({ ...anchor, cursorAutoModelVersion: 1 }, options).capturedAtMs, now.getTime() - 60_000);
 });
+
+test('switching the Antigravity scanner invalidates incompatible saved anchors', (t) => {
+  const { collectorAnchorTrust, configFingerprint } = freshCollector();
+  const envKey = 'TOKEN_MONITOR_TOKSCALE_ANTIGRAVITY_BACKPORT';
+  const original = process.env[envKey];
+  t.after(() => {
+    if (original === undefined) delete process.env[envKey];
+    else process.env[envKey] = original;
+  });
+  delete process.env[envKey];
+  const now = new Date(2026, 10, 15, 22);
+  const options = { clients: 'claude,antigravity', allTimeSince: '2024-01-01', now };
+  const anchor = {
+    dateKey: '2026-11-15', today: {}, month: {}, allTime: {},
+    configFingerprint: configFingerprint(options.clients, options.allTimeSince),
+    fullScanAt: new Date(now.getTime() - 60_000).toISOString()
+  };
+  const patchedAnchor = { ...anchor, antigravityNativeReasoningVersion: 1 };
+  assert.ok(collectorAnchorTrust(anchor, options));
+  assert.equal(collectorAnchorTrust(patchedAnchor, options), null);
+
+  process.env[envKey] = process.execPath;
+  assert.equal(collectorAnchorTrust(anchor, options), null);
+  assert.ok(collectorAnchorTrust(patchedAnchor, options));
+});
