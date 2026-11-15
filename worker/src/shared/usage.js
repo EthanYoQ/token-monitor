@@ -99,7 +99,7 @@ function tokenValue(obj) {
 // is present.
 function tokenValueForClient(obj, client) {
   const base = tokenValue(obj);
-  if (!hasDisjointReasoning(client) && !hasDisjointReasoning(detectSourceClient(obj))) return base;
+  if (!hasDisjointReasoning(client)) return base;
   const direct = firstNumber(obj, TOKEN_KEYS);
   return direct !== 0 ? base : base + Math.max(0, firstNumber(obj, REASONING_TOKEN_KEYS));
 }
@@ -109,7 +109,7 @@ function tokenValueForClient(obj, client) {
 // cache-miss + output still closes over totalTokens.
 function outputValueForClient(obj, client) {
   const output = Math.max(0, firstNumber(obj, OUTPUT_TOKEN_KEYS));
-  return hasDisjointReasoning(client) || hasDisjointReasoning(detectSourceClient(obj))
+  return hasDisjointReasoning(client)
     ? output + Math.max(0, firstNumber(obj, REASONING_TOKEN_KEYS))
     : output;
 }
@@ -269,13 +269,9 @@ function normalizeClientName(value) {
   return raw.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || null;
 }
 
-function detectSourceClient(obj) {
-  if (!obj || typeof obj !== 'object') return null;
-  return obj.client || obj.clients || obj.source || obj.platform || obj.agent || obj.tool || obj.name;
-}
-
 function detectClient(obj) {
-  return normalizeClientName(detectSourceClient(obj));
+  if (!obj || typeof obj !== 'object') return null;
+  return normalizeClientName(obj.client || obj.clients || obj.source || obj.platform || obj.agent || obj.tool || obj.name);
 }
 
 function normalizeModelName(value) {

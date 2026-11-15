@@ -66,6 +66,51 @@ function helpChild(possibleValues) {
   return child;
 }
 
+test('Antigravity adds native reasoning only when using the patched scanner', async (t) => {
+  const childProcess = require('node:child_process');
+  const envKey = 'TOKEN_MONITOR_TOKSCALE_ANTIGRAVITY_BACKPORT';
+  const original = process.env[envKey];
+  const scanBins = [];
+  const rows = [
+    { client: 'antigravity-cli', model: 'one', input: 10, output: 2, reasoning: 5 },
+    { client: 'antigravity-extension', model: 'two', input: 20, output: 4, reasoning: 8 },
+    { client: 'antigravity', model: 'three', input: 30, output: 16, reasoning: 10 }
+  ];
+  t.mock.method(childProcess, 'spawn', (bin, args) => {
+    scanBins.push(bin);
+    if (args.includes('graph')) {
+      return jsonChild({ contributions: [{
+        date: '2026-11-14',
+        clients: rows.map(({ client, model, ...tokens }) => ({ client, model, tokens }))
+      }] });
+    }
+    return jsonChild({ entries: rows });
+  });
+  t.after(() => {
+    if (original === undefined) delete process.env[envKey];
+    else process.env[envKey] = original;
+    delete require.cache[collectorPath];
+  });
+  const { collectUsageOnce, collectHistoryOnce } = freshCollector();
+  const options = {
+    clients: 'antigravity', allTimeSince: '2024-01-01',
+    commandTimeoutMs: 1000, deviceId: 'test-device', agentVersion: 'test',
+    limitsEnabled: false, wslScanEnabled: false, homeDir: __dirname
+  };
+  const read = async () => {
+    const usage = await collectUsageOnce(options);
+    const history = await collectHistoryOnce({ ...options, todayKey: '2026-11-15' });
+    return [usage.today.totalTokens, usage.month.totalTokens, usage.allTime.totalTokens, history.daily[0].tokens];
+  };
+  delete process.env[envKey];
+  assert.deepEqual(await read(), [82, 82, 82, 82]);
+
+  scanBins.length = 0;
+  process.env[envKey] = process.execPath;
+  assert.deepEqual(await read(), [95, 95, 95, 95]);
+  assert.deepEqual(scanBins, Array(4).fill(process.execPath));
+});
+
 test('a binary that supports every requested client never spawns a capability probe', async () => {
   const childProcess = require('node:child_process');
   const originalSpawn = childProcess.spawn;

@@ -32,7 +32,7 @@ const {
 } = require('./usage');
 const { collectWslUsage: collectWslUsageImpl, emptyWslBundle, probeWslState: probeWslStateImpl } = require('./wslUsage');
 const { createWatcherHost } = require('./watcherHost');
-const { localDayKey, mergeHistories, parseGraphResult, normalizeHistory } = require('./history');
+const { localDayKey, mergeHistories, parseGraphResult, normalizeHistory, num } = require('./history');
 const { retainDailyHistory, retainLiveDailyHistory } = require('./dailyHistoryArchive');
 const {
   createSubprocessTermination,
@@ -147,7 +147,16 @@ function decideResolver({ downloaded, bundled, shim }) {
   return bundled || shim || null;
 }
 
+function antigravityBackportPath() {
+  const bin = process.env.TOKEN_MONITOR_TOKSCALE_ANTIGRAVITY_BACKPORT;
+  if (!bin) return null;
+  if (!path.isAbsolute(bin)) throw new Error('TOKEN_MONITOR_TOKSCALE_ANTIGRAVITY_BACKPORT must be an absolute executable path');
+  return bin;
+}
+
 function resolvePlatformBinary() {
+  const backport = antigravityBackportPath();
+  if (backport) return { source: 'antigravity-backport', path: backport, version: null };
   const bundled = locateBundledBinary();
   const downloaded = readDownloadedPointer();
   const shim = { source: 'shim', path: TOKSCALE_BIN_JS, version: null };
@@ -232,6 +241,7 @@ function tokscaleCommand(options = {}) {
     : { bin: process.execPath, prefixArgs: [TOKSCALE_BIN_JS], env: { ...env, ELECTRON_RUN_AS_NODE: '1' } };
   return {
     ...command,
+    ...(resolved?.source === 'antigravity-backport' ? { antigravityBackport: true } : {}),
     identity: [resolved?.source || 'none', resolved?.path || '', resolved?.version || '', resolved?.integrity || ''].join('|')
   };
 }
@@ -246,6 +256,25 @@ function parseJsonOutput(stdout) {
     }
   }
   throw new Error(`Could not parse tokscale JSON output: ${text.slice(0, 300)}`);
+}
+
+function foldAntigravityBackportOutput(json) {
+  const isNative = (row) => row?.client === 'antigravity-cli' || row?.client === 'antigravity-extension';
+  // Reports have flat counters, while graph counters live under each client.
+  // RPC rows already include reasoning in output.
+  const fold = (counts) => {
+    const reasoning = num(counts?.reasoning);
+    if (reasoning > 0) counts.output = num(counts.output) + reasoning;
+  };
+  for (const row of Array.isArray(json?.entries) ? json.entries : []) {
+    if (isNative(row)) fold(row);
+  }
+  for (const day of Array.isArray(json?.contributions) ? json.contributions : []) {
+    for (const row of Array.isArray(day?.clients) ? day.clients : []) {
+      if (isNative(row)) fold(row.tokens);
+    }
+  }
+  return json;
 }
 
 function spawnTokscaleJson(userArgs, commandTimeoutMs, command = tokscaleCommand(), signal, options = {}) {
@@ -312,7 +341,10 @@ function spawnTokscaleJson(userArgs, commandTimeoutMs, command = tokscaleCommand
         error.tokscaleStderr = stderr;
         return finish(error);
       }
-      try { finish(null, parseJsonOutput(stdout)); } catch (error) { finish(error); }
+      try {
+        const json = parseJsonOutput(stdout);
+        finish(null, command.antigravityBackport ? foldAntigravityBackportOutput(json) : json);
+      } catch (error) { finish(error); }
     });
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) onAbort();
@@ -2652,7 +2684,9 @@ function collectorAnchorTrust(saved, options = {}) {
   // applying a new `cursor-auto` Today delta to them would split one mode.
   const trackedClients = normalizeClientsCsv(clients).split(',');
   if (trackedClients.includes('cursor') && saved.cursorAutoModelVersion !== 1) return null;
-  if (trackedClients.includes('antigravity') && saved.antigravityNativeReasoningVersion !== 1) return null;
+  // A delta from one scanner would mix two accounting rules in the broad periods.
+  if (trackedClients.includes('antigravity')
+    && (saved.antigravityNativeReasoningVersion ?? 0) !== (antigravityBackportPath() ? 1 : 0)) return null;
   if (saved.configFingerprint !== configFingerprint(clients, allTimeSince, projectsEnabled, qoderCnDbPath, qoderCnProjectsDir, customScanPaths, ccSwitchClaudeEnabled, ccSwitchDbPath)) return null;
   const parsed = Date.parse(saved.fullScanAt || '');
   const capturedAtMs = Number.isFinite(parsed) && parsed <= now.getTime() ? parsed : null;
@@ -3183,7 +3217,7 @@ function startCollector(options) {
             fs.writeFileSync(anchorPath, JSON.stringify({
               dateKey: anchor.dateKey,
               cursorAutoModelVersion: 1,
-              antigravityNativeReasoningVersion: 1,
+              antigravityNativeReasoningVersion: antigravityBackportPath() ? 1 : 0,
               today: anchor.today,
               month: anchor.month,
               allTime: anchor.allTime,
